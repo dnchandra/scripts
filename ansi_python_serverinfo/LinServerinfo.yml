@@ -1,0 +1,95 @@
+---
+# Author : Naresh Chandra Dhabbeti
+ - name: Check Kernel Versions
+   hosts: linux
+   tasks:
+    - name: Gather Server information 
+      ansible.builtin.script: LinServerinfo.sh >/tmp/{{ansible_hostname}}_{{ ansible_date_time.date }}.txt
+
+ - name: Remote Preperation
+   hosts: workstation
+   tasks:
+    - name: Create a Reports directory if it does not exist
+      ansible.builtin.file:
+        path: /home/student/projects
+        state: directory
+        mode: '0755'
+    - name: Create a Reports directory if it does not exist
+      ansible.builtin.file:
+        path: /home/student/projects/reports
+        state: directory
+        mode: '0755'
+    - name: Create a Archive directory if it does not exist
+      ansible.builtin.file:
+        path: /home/student/projects/archive
+        state: directory
+        mode: '0755'
+    - name: Create a JSON directory if it does not exist
+      ansible.builtin.file:
+        path: /home/student/projects/json
+        state: directory
+        mode: '0755'
+    - name: Copying the Directory's contents (sub directories/files)
+      ansible.builtin.copy:
+        src: ./remotescripts/
+        dest: /home/student/projects
+  #  - name: Performing Cleanup job
+  #    archive:
+  #      path: /home/student/projects/reports
+  #       dest: /home/student/projects/reports/archive/reports_{{ ansible_date_time.date }}.tgz
+    - name: Prepare for Processing
+      ansible.builtin.shell: ansible-playbook gather.yaml
+      args:
+        chdir: /home/student/projects
+      register: preperation
+      ignore_errors: yes
+    - name: File process status
+      debug:
+        var: preperation.stdout
+    - name: Verify Homepage Status
+      stat: 
+        path: /home/student/projects/index.html
+      register: index
+    - name: Backup Home Page
+      ansible.builtin.shell: date=$(date '+%Y-%m-%d %H:%M:%S'); cp /home/student/projects/index.html /home/student/projects/index_bak.html;cp /home/student/projects/index.html /home/student/projects/archive/index-$(date '+%Y-%m-%d-%s').html
+      when: index.stat.exists
+   # - name: Result merger in progress
+   #   ansible.builtin.shell: bash -c 'for i in *.txt;do cat $i >> final.txt;done;'
+   #   args:
+   #     chdir: /home/student/projects/reports
+   #   register: concatoutput
+   # - name: Gathered All Servers information
+   #   debug:
+   #     var: concatoutput.stdout
+    - name: Converting to JSON
+      ansible.builtin.shell: bash -c 'python convert2json.py'
+      args:
+        chdir: /home/student/projects
+      register: c2j
+    - name: JSON Status
+      debug:
+        var: c2j.stdout
+    - name: Converting to JSON to HTML
+      ansible.builtin.shell: bash -c 'python json2html.py'
+      args:
+        chdir: /home/student/projects
+      register: j2html
+    - name: JSON2HTML Status
+      debug:
+        var: j2html.stdout
+
+    - name: Copying to Web Server
+      ansible.builtin.copy:
+        src: /home/student/projects/index.html
+        remote_src: true
+        dest: /home/student/website
+    
+    - name: Prepare Archival
+      ansible.builtin.shell: tar -cvzf ../archive/serverinfo_{{ ansible_date_time.date }}.tar.gz *.txt --remove-files
+      args:
+        chdir: /home/student/projects/reports
+      register: tarout
+    - name: Archival Status
+      debug:
+        var: tarout.stdout
+  

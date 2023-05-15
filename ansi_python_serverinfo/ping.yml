@@ -1,0 +1,7 @@
+---
+- hosts: linux
+  strategy: free
+  #serial: 1
+  gather_facts: false
+  tasks:
+    - ping:

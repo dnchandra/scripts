@@ -1,0 +1,11 @@
+[windows]
+win22 ansible_host=win22
+ad ansible_host=ad
+
+[linux]
+servera ansible_host=servera ansible_host=192.168.1.67
+serverb ansible_host=serverb ansible_host=192.168.1.68
+workstation ansible_host=workstation ansible_host=192.168.1.66
+
+[tower]
+awx ansible_host=awx ansible_host=192.168.1.50

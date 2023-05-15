@@ -1,0 +1,5 @@
+ - name: Check Kernel Versions
+   hosts: linux
+   tasks:
+    - name: Gather Server information 
+      ansible.builtin.script: LinServerinfo.sh >/tmp/{{ansible_hostname}}_{{ ansible_date_time.date }}.txt

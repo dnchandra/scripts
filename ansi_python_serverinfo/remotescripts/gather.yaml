@@ -1,0 +1,12 @@
+---
+# Author : Naresh Chandra Dhabbeti
+ - name: Check Kernel Versions
+   hosts: linux
+
+   tasks:
+    - name: Fetch the file from server
+      fetch:
+        src: "/tmp/{{ansible_hostname}}_{{ ansible_date_time.date }}.txt"
+        dest: "/home/student/projects/reports/"
+        flat: yes
+
