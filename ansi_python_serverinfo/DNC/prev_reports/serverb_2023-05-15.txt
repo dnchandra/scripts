@@ -1,0 +1,14 @@
+Hostname:serverb.lab.example.com
+Date:Mon May 15 02:45:47 PM IST 2023
+Uptime:up 4 hours, 18 minutes
+Machine Type:VM
+Version:Red Hat Enterprise Linux release 9.1 (Plow)
+Kernel:5.14.0-162.23.1.el9_1.x86_64
+Processor Name:Intel(R) Xeon(R) CPU E5-2678 v3 @ 2.50GHz
+System Main IP:192.168.1.68
+Logged-in User:student
+Ulimit open files:1024
+Ulimit max user processes:62686
+Ulimit POSIX message queues:819200
+Manufacturer:No Enclosure
+Product Name:VMware20,1
