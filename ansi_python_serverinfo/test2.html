@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: Arial, sans-serif;
+    }
+    
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    
+    header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    
+    nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    
+    nav img {
+      height: 50px;
+    }
+    
+    .row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+    
+    .block {
+      width: 48%;
+      text-align: center;
+      padding: 20px;
+    }
+    
+    .block img {
+      width: 100%;
+      max-height: 150px;
+      margin-bottom: 10px;
+    }
+    
+    @media screen and (max-width: 768px) {
+      .block {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Header</h1>
+    </header>
+    <nav>
+      <img src="logo.png" alt="Logo">
+    </nav>
+    <div class="row">
+      <div class="block">
+        <a href="link1.html">
+          <img src="images/redhat.png" alt="Image 1">
+          <h3>Block 1</h3>
+        </a>
+      </div>
+      <div class="block">
+        <a href="link2.html">
+          <img src="images/splunk.jpg" alt="Image 2">
+          <h3>Block 2</h3>
+        </a>
+      </div>
+    </div>
+    <div class="row">
+      <div class="block">
+        <a href="link3.html">
+          <img src="images/splunk1.png" alt="Image 3">
+          <h3>Block 3</h3>
+        </a>
+      </div>
+      <div class="block">
+        <a href="link4.html">
+          <img src="images/bitbucket.png" alt="Image 4">
+          <h3>Block 4</h3>
+        </a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
