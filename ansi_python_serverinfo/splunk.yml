@@ -1,0 +1,31 @@
+---
+- name: Search in Splunk and export to CSV
+  hosts: localhost
+  gather_facts: False
+
+  vars_prompt:
+    - name: query
+      prompt: "Enter the search query"
+    - name: earliest_time
+      prompt: "Enter the earliest time (in Splunk time format)"
+    - name: latest_time
+      prompt: "Enter the latest time (in Splunk time format)"
+    - name: output_file
+      prompt: "Enter the output CSV file path"
+
+  tasks:
+    - name: Search in Splunk and export to CSV
+      splunk_search:
+        server_url: "https://splunk_server:8089"
+        username: "{{ splunk_username }}"
+        password: "{{ splunk_password }}"
+        query: "{{ query }}"
+        earliest_time: "{{ earliest_time }}"
+        latest_time: "{{ latest_time }}"
+        output_mode: "csv"
+        output_file: "{{ output_file }}"
+      vars:
+        splunk_username: "{{ vault_splunk_username }}"
+        splunk_password: "{{ vault_splunk_password }}"
+      vars_files:
+        - credentials.yml
