@@ -1,0 +1,43 @@
+---
+- name: Search in Splunk and export to CSV
+  hosts: localhost
+  gather_facts: False
+
+  vars_prompt:
+    - name: query
+      prompt: "Enter the search query"
+
+  tasks:
+    - name: Authenticate with Splunk
+      uri:
+        url: "https://splunk_server:8089/services/auth/login"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          username: "{{ splunk_username }}"
+          password: "{{ splunk_password }}"
+      register: login_response
+      no_log: true
+
+    - name: Extract session key
+      set_fact:
+        session_key: "{{ login_response.json.sessionKey }}"
+
+    - name: Calculate time range
+      set_fact:
+        earliest_time: "{{ ansible_date_time.epoch - 3600 }}"
+        latest_time: "{{ ansible_date_time.epoch }}"
+
+    - name: Perform search in Splunk
+      uri:
+        url: "https://splunk_server:8089/services/search/jobs/export"
+        method: POST
+        headers:
+          Authorization: "Splunk {{ session_key }}"
+        body_format: form-urlencoded
+        body:
+          search: "{{ query }}"
+          earliest_time: "{{ earliest_time }}"
+          latest_time: "{{ latest_time }}"
+          output_mode: "csv"
+        dest: "{{ playbook_dir }}/output.csv"
