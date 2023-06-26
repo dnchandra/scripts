@@ -1,0 +1,73 @@
+import requests
+import csv
+
+# Splunk API endpoint
+splunk_url = "http://your-splunk-server:8089/services/search/jobs"
+
+# Splunk search query
+search_query = "search index=test_index sourcetype=test_sourcetype host*"
+
+# Splunk time range for the last 5 minutes
+time_range = "-5m"
+
+# Splunk authentication details
+username = "your-username"
+password = "your-password"
+
+# Define headers for Splunk API request
+headers = {
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Accept": "application/json"
+}
+
+# Prepare Splunk API request payload
+payload = {
+    "search": search_query,
+    "earliest_time": time_range
+}
+
+# Send request to Splunk API
+response = requests.post(splunk_url, data=payload, headers=headers, auth=(username, password), verify=False)
+
+# Check response status code
+if response.status_code == 201:
+    # Retrieve the search ID from the response
+    search_id = response.json()["sid"]
+    print("Search ID:", search_id)
+
+    # Poll the search job until it is complete
+    search_status_url = splunk_url + "/" + search_id
+    search_status_params = {
+        "output_mode": "json"
+    }
+
+    while True:
+        search_status_response = requests.get(search_status_url, params=search_status_params, auth=(username, password), verify=False)
+        search_status = search_status_response.json()["entry"][0]["content"]["dispatchState"]
+
+        if search_status == "DONE":
+            # Retrieve search results
+            search_results_url = search_status_url + "/results"
+            search_results_params = {
+                "output_mode": "csv"
+            }
+
+            search_results_response = requests.get(search_results_url, params=search_results_params, auth=(username, password), verify=False)
+
+            # Save search results to a CSV file
+            with open("search_results.csv", "w", newline="") as csv_file:
+                csv_file.write(search_results_response.text)
+
+            print("Search results saved to search_results.csv")
+            break
+
+        elif search_status == "FAILED":
+            print("Search job failed")
+            break
+
+        else:
+            # Wait for the search job to complete
+            time.sleep(1)
+
+else:
+    print("Error occurred. Status code:", response.status_code)
