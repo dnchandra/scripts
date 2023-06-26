@@ -27,14 +27,14 @@
 
     - name: Extract session key
       set_fact:
-        session_key: "{{ login_response.content | b64decode | xml }}" 
+        session_key: "{{ login_response.content | b64decode | xmldom | xpath('/response/sessionKey/text()') | first }}"
 
     - name: Perform search in Splunk
       uri:
         url: "https://splunk_server:8089/services/search/jobs/export"
         method: POST
         headers:
-          Authorization: "Splunk {{ session_key.response.sessionKey }}"
+          Authorization: "Splunk {{ session_key }}"
         body_format: form-urlencoded
         body:
           search: "{{ query }}"
