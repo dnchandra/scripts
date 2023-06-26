@@ -1,0 +1,27 @@
+---
+- name: Search Splunk Query
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Execute Splunk Search
+      uri:
+        url: "http://your-splunk-server:8089/services/search/jobs"
+        method: POST
+        headers:
+          Content-Type: "application/x-www-form-urlencoded"
+          Accept: "application/json"
+        body_format: form-urlencoded
+        body:
+          search: "search *"
+          earliest_time: "-5m"
+        validate_certs: no
+        return_content: yes
+        status_code: 201
+        user: your-username
+        password: your-password
+      register: search_response
+
+    - name: Store Search Results in CSV File
+      copy:
+        content: "{{ search_response.json | json_query('results[*].{_raw}') | join('\n') }}"
+        dest: "/path/to/output.csv"
