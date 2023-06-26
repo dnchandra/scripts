@@ -1,0 +1,23 @@
+from lxml import etree
+from lxml.etree import XPathError
+
+def xml(content):
+    try:
+        root = etree.fromstring(content)
+        return root
+    except etree.XMLSyntaxError as e:
+        raise XPathError(f"Failed to parse XML content: {e}")
+
+def xpath(node, expression):
+    try:
+        result = node.xpath(expression)
+        return result
+    except XPathError as e:
+        raise XPathError(f"XPath evaluation failed: {e}")
+
+class FilterModule:
+    def filters(self):
+        return {
+            'xml': xml,
+            'xpath': xpath,
+        }
