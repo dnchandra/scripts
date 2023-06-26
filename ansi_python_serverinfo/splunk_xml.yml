@@ -27,7 +27,7 @@
 
     - name: Extract session key
       set_fact:
-        session_key: "{{ login_response.content | b64decode | xmldom | xpath('/response/sessionKey/text()') | first }}"
+        session_key: "{{ login_response.content | b64decode | xml | xpath('/response/sessionKey/text()') | first }}"
 
     - name: Perform search in Splunk
       uri:
