@@ -1,0 +1,67 @@
+import csv
+import requests
+from datetime import datetime, timedelta
+
+# Splunk server details
+splunk_host = 'your_splunk_host'
+splunk_port = '8089'
+splunk_username = 'your_username'
+splunk_password = 'your_password'
+
+# Define search parameters
+index_name = 'test_index'
+time_range = '-5m'  # Last 5 minutes
+
+# Construct the search query
+search_query = f'search index={index_name} earliest=-{time_range}'
+
+# Create the Splunk search request
+search_url = f'http://{splunk_host}:{splunk_port}/services/search/jobs'
+search_headers = {'Authorization': f'Splunk {splunk_username}:{splunk_password}'}
+search_payload = {
+    'search': search_query,
+    'output_mode': 'json'
+}
+
+# Submit the search request
+search_response = requests.post(search_url, headers=search_headers, data=search_payload, verify=False)
+search_response.raise_for_status()
+
+# Extract the job ID from the search response
+search_data = search_response.json()
+job_id = search_data['sid']
+
+# Wait for the search job to complete
+job_status_url = f'http://{splunk_host}:{splunk_port}/services/search/jobs/{job_id}'
+job_status_params = {'output_mode': 'json'}
+while True:
+    job_status_response = requests.get(job_status_url, headers=search_headers, params=job_status_params, verify=False)
+    job_status_response.raise_for_status()
+    job_status_data = job_status_response.json()
+    if job_status_data['entry'][0]['content']['isDone'] == '1':
+        break
+
+    # Wait for 1 second before checking the job status again
+    time.sleep(1)
+
+# Get the search job results
+results_url = f'http://{splunk_host}:{splunk_port}/services/search/jobs/{job_id}/results'
+results_params = {'output_mode': 'json'}
+results_response = requests.get(results_url, headers=search_headers, params=results_params, verify=False)
+results_response.raise_for_status()
+results_data = results_response.json()
+
+# Retrieve the field names from the results
+fields = results_data['fields']
+
+# Retrieve the events from the results
+events = results_data['results']
+
+# Export the results to a CSV file
+with open('splunk_results.csv', 'w', newline='') as csvfile:
+    csv_writer = csv.writer(csvfile)
+    # Write the header row
+    csv_writer.writerow(fields)
+    # Write the data rows
+    for event in events:
+        csv_writer.writerow([event[field] for field in fields])
