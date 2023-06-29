@@ -1,84 +1,25 @@
-import requests
 import csv
-import urllib3
+from datetime import datetime, timedelta
+from splunklib.client import connect
 
-# Disable SSL verification warning
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Connect to Splunk
+splunk_service = connect(host='your_splunk_host', port=8089, username='your_username', password='your_password')
 
-# Splunk API endpoint
-splunk_url = "https://your-splunk-server:8089/services/search/jobs"
+# Define search parameters
+index_name = 'test_index'
+time_range = '-5m'  # Last 5 minutes
 
-# Splunk search query
-search_query = ' (index=test_index) (Source="/app/access.*")  (NOT "_raw" =*/monitor/health.html*") | search finalstatus=500 | stats dedup_splitvals=t count  As Count by remotehost | fields - _span |  fillnull Count | fields remotehost, Count | sort - Count'
+# Construct the search query
+search_query = f'search index={index_name} earliest_time=-{time_range}'
 
-# Splunk time range for the last 5 minutes
-time_range = "-5m"
+# Run the search
+search_results = splunk_service.jobs.export(search_query)
 
-# Splunk authentication details
-username = "your-username"
-password = "your-password"
-
-# Define headers for Splunk API request
-headers = {
-    "Content-Type": "application/x-www-form-urlencoded",
-    "Accept": "application/json"
-}
-
-# Prepare Splunk API request payload
-payload = {
-    "search": search_query,
-    "earliest_time": time_range,
-    "output_mode": "csv"
-}
-
-# Send request to Splunk API with SSL verification disabled
-response = requests.post(splunk_url, data=payload, headers=headers, auth=(username, password), verify=False)
-
-# Check response status code
-if response.status_code == 201:
-    # Retrieve the search ID from the response
-    search_id = response.json()["sid"]
-    print("Search ID:", search_id)
-
-    # Poll the search job until it is complete
-    search_status_url = splunk_url + "/" + search_id
-    search_status_params = {
-        "output_mode": "json"
-    }
-
-    while True:
-        search_status_response = requests.get(search_status_url, params=search_status_params, auth=(username, password), verify=False)
-        search_status = search_status_response.json()["entry"][0]["content"]["dispatchState"]
-
-        if search_status == "DONE":
-            # Retrieve search results
-            search_results_url = search_status_url + "/results"
-            search_results_params = {
-                "output_mode": "csv"
-            }
-
-            search_results_response = requests.get(search_results_url, params=search_results_params, auth=(username, password), verify=False)
-
-            try:
-                # Save search results to a CSV file
-                with open("search_results.csv", "w", newline="") as csv_file:
-                    csv_file.write(search_results_response.text)
-
-                print("Search results saved to search_results.csv")
-                break
-
-            except Exception as e:
-                print("Error occurred while saving search results:", str(e))
-                break
-
-        elif search_status == "FAILED":
-            print("Search job failed")
-            break
-
-        else:
-            # Wait for the search job to complete
-            time.sleep(1)
-
-else:
-    print("Error occurred. Status code:", response.status_code)
-    print("Response content:", response.content)
+# Retrieve the results and export to CSV
+with open('splunk_results.csv', 'w', newline='') as csvfile:
+    csv_writer = csv.writer(csvfile)
+    # Write the header row
+    csv_writer.writerow(search_results.fields)
+    # Write the data rows
+    for result in search_results:
+        csv_writer.writerow(result.values())
