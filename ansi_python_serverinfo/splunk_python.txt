@@ -1,11 +1,15 @@
 import requests
 import csv
+import urllib3
+
+# Disable SSL verification warning
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Splunk API endpoint
-splunk_url = "http://your-splunk-server:8089/services/search/jobs"
+splunk_url = "https://your-splunk-server:8089/services/search/jobs"
 
 # Splunk search query
-search_query = "search index=test_index sourcetype=test_sourcetype host*"
+search_query = ' (index=test_index) (Source="/app/access.*")  (NOT "_raw" =*/monitor/health.html*") | search finalstatus=500 | stats dedup_splitvals=t count  As Count by remotehost | fields - _span |  fillnull Count | fields remotehost, Count | sort - Count'
 
 # Splunk time range for the last 5 minutes
 time_range = "-5m"
@@ -23,10 +27,11 @@ headers = {
 # Prepare Splunk API request payload
 payload = {
     "search": search_query,
-    "earliest_time": time_range
+    "earliest_time": time_range,
+    "output_mode": "csv"
 }
 
-# Send request to Splunk API
+# Send request to Splunk API with SSL verification disabled
 response = requests.post(splunk_url, data=payload, headers=headers, auth=(username, password), verify=False)
 
 # Check response status code
@@ -54,12 +59,17 @@ if response.status_code == 201:
 
             search_results_response = requests.get(search_results_url, params=search_results_params, auth=(username, password), verify=False)
 
-            # Save search results to a CSV file
-            with open("search_results.csv", "w", newline="") as csv_file:
-                csv_file.write(search_results_response.text)
+            try:
+                # Save search results to a CSV file
+                with open("search_results.csv", "w", newline="") as csv_file:
+                    csv_file.write(search_results_response.text)
 
-            print("Search results saved to search_results.csv")
-            break
+                print("Search results saved to search_results.csv")
+                break
+
+            except Exception as e:
+                print("Error occurred while saving search results:", str(e))
+                break
 
         elif search_status == "FAILED":
             print("Search job failed")
@@ -71,3 +81,4 @@ if response.status_code == 201:
 
 else:
     print("Error occurred. Status code:", response.status_code)
+    print("Response content:", response.content)
