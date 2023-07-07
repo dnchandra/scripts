@@ -1,36 +1,15 @@
 from google.cloud import bigquery
-from google.auth import credentials
 
-def connect_to_bigquery(json_key_path):
-    # Load credentials from the JSON key file
-    creds = credentials.Credentials.from_service_account_file(json_key_path)
+def display_project_details():
+    # Create a client object
+    client = bigquery.Client()
 
-    # Create a client using the obtained credentials
-    client = bigquery.Client(credentials=creds)
-
-    # Extract the project ID from the client object
-    project_id = client.project
-
-    return client, project_id
-
-def display_project_details(client):
-    # Get the project details
+    # Fetch the project details
     project = client.project
 
-    print("Connected to project ID:", project)
-    print("Datasets in the project:")
+    # Display the project details
+    print("Project ID: {}".format(project))
+    print("Project Name: {}".format(client.project_name))
+    print("Project Number: {}".format(client.project_number))
 
-    # List datasets in the project
-    datasets = client.list_datasets()
-
-    for dataset in datasets:
-        print(dataset.dataset_id)
-
-# JSON authentication path
-json_key_path = 'path/to/your/json_key.json'
-
-# Connect to BigQuery
-client, project_id = connect_to_bigquery(json_key_path)
-
-# Display project details
-display_project_details(client)
+display_project_details()
