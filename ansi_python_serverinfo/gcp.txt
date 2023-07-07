@@ -8,8 +8,8 @@ def connect_to_bigquery(url, json_key_path):
     # Create a client using the obtained credentials
     client = bigquery.Client(credentials=creds)
 
-    # Extract the project ID from the credentials
-    project_id = creds.project_id
+    # Extract the project ID from the client object
+    project_id = client.project
 
     return client, project_id
 
