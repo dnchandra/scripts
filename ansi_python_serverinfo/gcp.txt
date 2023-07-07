@@ -1,15 +1,12 @@
 from google.cloud import bigquery
 
-def display_project_details():
-    # Create a client object
-    client = bigquery.Client()
+client = bigquery.Client.from_service_account_json('/path/to/your/json/file.json')
 
-    # Fetch the project details
-    project = client.project
+datasets = list(client.list_datasets())
 
-    # Display the project details
-    print("Project ID: {}".format(project))
-    print("Project Name: {}".format(client.project_name))
-    print("Project Number: {}".format(client.project_number))
-
-display_project_details()
+if datasets:
+    print("Datasets in project {}:".format(client.project))
+    for dataset in datasets:
+        print("\t{}".format(dataset.dataset_id))
+else:
+    print("{} project does not contain any datasets.".format(client.project))
