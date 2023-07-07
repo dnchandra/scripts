@@ -1,9 +1,9 @@
 from google.cloud import bigquery
-from google.oauth2 import service_account
+from google.auth import jwt
 
 def connect_to_bigquery(url, json_key_path):
     # Load credentials from the JSON key file
-    creds = service_account.Credentials.from_service_account_file(json_key_path, scopes=[url])
+    creds = jwt.Credentials.from_service_account_file(json_key_path, target_principal=url)
 
     # Create a client using the obtained credentials
     client = bigquery.Client(credentials=creds)
