@@ -8,5 +8,12 @@ if datasets:
     print("Datasets in project {}:".format(client.project))
     for dataset in datasets:
         print("\t{}".format(dataset.dataset_id))
+        tables = list(client.list_tables(dataset))
+        if tables:
+            print("\tTables:")
+            for table in tables:
+                print("\t\t{}".format(table.table_id))
+        else:
+            print("\tThis dataset does not contain any tables.")
 else:
     print("{} project does not contain any datasets.".format(client.project))
