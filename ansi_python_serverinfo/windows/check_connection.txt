@@ -1,0 +1,23 @@
+import requests
+
+def test_winrm_connectivity(hostname, username, password):
+    url = f"http://{hostname}:5985/wsman"
+    auth = (username, password)
+
+    try:
+        response = requests.get(url, auth=auth)
+        response.raise_for_status()
+        print(f"WinRM connectivity to {hostname} is successful.")
+        return True
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error: {e}")
+        return False
+
+if __name__ == "__main__":
+    # Replace the values below with the actual hostname, username, and password
+    hostname = "your_windows_host"
+    username = "your_windows_username"
+    password = "your_windows_password"
+
+    test_winrm_connectivity(hostname, username, password)
