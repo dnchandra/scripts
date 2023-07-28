@@ -1,20 +1,31 @@
 import subprocess
+import sys
+import json
 from jinja2 import Environment, FileSystemLoader
 
 def execute_powershell_script(hostname, username, password, script):
     try:
         cmd = [
             "powershell",
+            "-NoProfile",
+            "-NonInteractive",
             "-Command", f"$securePass = ConvertTo-SecureString '{password}' -AsPlainText -Force;"
                        f"$cred = New-Object System.Management.Automation.PSCredential ('{username}', $securePass);"
                        f"Invoke-Command -ComputerName {hostname} -Credential $cred -ScriptBlock {{{script}}}"
         ]
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
+        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+
+        if sys.version_info.major >= 3:
+            output = output.decode("utf-8")
+
         return output.strip()
 
     except subprocess.CalledProcessError as e:
         print(f"Error occurred while executing the PowerShell script on {hostname}: {e}")
         return None
+
+# Rest of the code remains unchanged
+
 
 def get_windows_kb_details(hostname, username, password):
     powershell_script = r'''
