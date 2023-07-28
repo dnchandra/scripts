@@ -1,0 +1,22 @@
+---
+- name: Execute PowerShell script on remote Windows hosts
+  hosts: your_windows_host_group
+  gather_facts: no  # Disable gathering facts to speed up execution
+  tasks:
+    - name: Copy PowerShell script to remote Windows hosts
+      win_copy:
+        src: /path/to/your/local/example_script.ps1
+        dest: C:\Temp\example_script.ps1  # Destination path on the remote Windows hosts
+
+    - name: Execute the PowerShell script remotely
+      win_shell: |
+        # Set execution policy to allow running scripts
+        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+
+        # Execute the script
+        C:\Temp\example_script.ps1
+      register: ps_script_output
+
+    - name: Display script output
+      debug:
+        var: ps_script_output.stdout_lines
