@@ -1,0 +1,13 @@
+- name: Get installed KBs on Windows
+  hosts: windows_hosts
+  tasks:
+    - name: Gather Windows updates facts
+      win_updates_facts:
+      register: updates_result
+
+    - name: Display installed KBs with installation date
+      debug:
+        msg: "KB{{ item.kb }} - Installed on: {{ item.installed }}"
+      loop: "{{ updates_result.updates }}"
+      loop_control:
+        label: "{{ item.kb }}"
