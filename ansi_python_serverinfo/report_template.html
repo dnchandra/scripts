@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ hostname }} KB Report</title>
+</head>
+<body>
+    <h1>{{ hostname }} KB Report</h1>
+    <table border="1">
+        <tr>
+            <th>KB ID</th>
+            <th>Description</th>
+            <th>Installed On</th>
+        </tr>
+        {% for kb in kb_details %}
+        <tr>
+            <td>{{ kb.KBID }}</td>
+            <td>{{ kb.Description }}</td>
+            <td>{{ kb.InstalledOn }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
