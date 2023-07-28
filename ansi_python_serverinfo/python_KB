@@ -2,10 +2,34 @@ import wmi
 from jinja2 import Environment, FileSystemLoader
 
 def get_windows_kb_details(hostname, username, password):
-    # Same code as before
+    try:
+        c = wmi.WMI(hostname, user=username, password=password)
+        updates = c.Win32_QuickFixEngineering()
+
+        kb_details = []
+        for update in updates:
+            kb_details.append({
+                "KBID": update.HotFixID,
+                "Description": update.Description,
+                "InstalledOn": update.InstalledOn
+            })
+
+        return {
+            "hostname": hostname,
+            "kb_details": kb_details
+        }
+
+    except Exception as e:
+        print(f"Error occurred while fetching KB details from {hostname}: {e}")
+        return None
 
 def generate_html_report(data):
-    # Same code as before
+    env = Environment(loader=FileSystemLoader('.'))
+    template = env.get_template('report_template.html')
+    html_content = template.render(data=data)
+    
+    with open(f"{data['hostname']}_kb_report.html", "w") as html_file:
+        html_file.write(html_content)
 
 if __name__ == "__main__":
     # Read hostnames from the file
