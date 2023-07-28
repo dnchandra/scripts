@@ -1,0 +1,43 @@
+import wmi
+from jinja2 import Environment, FileSystemLoader
+
+def get_windows_kb_details(hostname, username, password):
+    # Same code as before
+
+def generate_html_report(data):
+    # Same code as before
+
+if __name__ == "__main__":
+    # Read hostnames from the file
+    hostnames_file = "hostnames.txt"
+    with open(hostnames_file, "r") as file:
+        hostnames = [line.strip() for line in file if line.strip()]
+
+    if not hostnames:
+        print("No hostnames found in the file.")
+        exit(1)
+
+    windows_hosts = []
+
+    for hostname in hostnames:
+        # Replace "usernameX" and "passwordX" with actual credentials for each hostname
+        windows_hosts.append({
+            "hostname": hostname,
+            "username": "usernameX",
+            "password": "passwordX"
+        })
+
+    all_hosts_data = []
+
+    for host_info in windows_hosts:
+        host_data = get_windows_kb_details(
+            host_info["hostname"],
+            host_info["username"],
+            host_info["password"]
+        )
+        if host_data:
+            all_hosts_data.append(host_data)
+
+    for data in all_hosts_data:
+        if data:
+            generate_html_report(data)
