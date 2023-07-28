@@ -1,9 +1,9 @@
 import winrm
 from jinja2 import Environment, FileSystemLoader
 
-def execute_powershell_script(hostname, username, password, script):
+def execute_powershell_script(target, hostname, username, password, script):
     session = winrm.Session(
-        hostname=hostname,
+        target=target,
         auth=(username, password),
         transport='ntlm',
         server_cert_validation='ignore'
@@ -11,6 +11,7 @@ def execute_powershell_script(hostname, username, password, script):
 
     result = session.run_ps(script)
     return result.std_out
+
 
 def get_windows_kb_details(hostname, username, password):
     powershell_script = r'''
