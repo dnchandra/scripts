@@ -1,0 +1,82 @@
+import subprocess
+from jinja2 import Environment, FileSystemLoader
+
+def execute_powershell_script(hostname, username, password, script):
+    try:
+        cmd = [
+            "powershell",
+            "-Command", f"$securePass = ConvertTo-SecureString '{password}' -AsPlainText -Force;"
+                       f"$cred = New-Object System.Management.Automation.PSCredential ('{username}', $securePass);"
+                       f"Invoke-Command -ComputerName {hostname} -Credential $cred -ScriptBlock {{{script}}}"
+        ]
+        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
+        return output.strip()
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error occurred while executing the PowerShell script on {hostname}: {e}")
+        return None
+
+def get_windows_kb_details(hostname, username, password):
+    powershell_script = r'''
+        $updates = Get-HotFix
+        $kbDetails = @()
+        foreach ($update in $updates) {
+            $kbDetails += @{
+                "KBID" = $update.HotFixID
+                "Description" = $update.Description
+                "InstalledOn" = $update.InstalledOn
+            }
+        }
+        $kbDetails | ConvertTo-Json
+    '''
+    result = execute_powershell_script(hostname, username, password, powershell_script)
+
+    if result:
+        return {
+            "hostname": hostname,
+            "kb_details": eval(result)
+        }
+    return None
+
+def generate_html_report(data):
+    env = Environment(loader=FileSystemLoader('.'))
+    template = env.get_template('report_template.html')
+    html_content = template.render(data=data)
+
+    with open(f"{data['hostname']}_kb_report.html", "w") as html_file:
+        html_file.write(html_content)
+
+if __name__ == "__main__":
+    # Read hostnames from the file
+    hostnames_file = "hostnames.txt"
+    with open(hostnames_file, "r") as file:
+        hostnames = [line.strip() for line in file if line.strip()]
+
+    if not hostnames:
+        print("No hostnames found in the file.")
+        exit(1)
+
+    windows_hosts = []
+
+    for hostname in hostnames:
+        # Replace "usernameX" and "passwordX" with actual credentials for each hostname
+        windows_hosts.append({
+            "hostname": hostname,
+            "username": "usernameX",
+            "password": "passwordX"
+        })
+
+    all_hosts_data = []
+
+    for host_info in windows_hosts:
+        host_data = get_windows_kb_details(
+            host_info["hostname"],
+            host_info["username"],
+            host_info["password"]
+        )
+        if host_data:
+            all_hosts_data.append(host_data)
+
+    for data in all_hosts_data:
+        if data:
+            generate_html_report(data)
