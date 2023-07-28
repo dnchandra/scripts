@@ -1,0 +1,19 @@
+- name: Get installed KBs on Windows
+  hosts: windows_hosts
+  gather_facts: no
+  tasks:
+    - name: Run PowerShell script to get installed KBs
+      win_shell: |
+        $updates = Get-WmiObject -Class Win32_QuickFixEngineering | Sort-Object -Property InstalledOn -Descending
+        $kbList = @()
+        foreach ($update in $updates) {
+            $kbNumber = $update.HotFixID
+            $installedOn = $update.InstalledOn
+            $kbList += "KB$kbNumber - Installed on: $installedOn"
+        }
+        $kbList
+      register: script_output
+
+    - name: Display the list of installed KBs
+      debug:
+        var: script_output.stdout_lines
