@@ -1,0 +1,20 @@
+TOWER_URL="https://your_ansible_tower_url/api/v2/job_templates/<JOB_TEMPLATE_ID>/launch/"
+API_TOKEN="your_api_token"
+
+# Execute the Job Template and get the Job ID
+job_id=$(curl -X POST -H "Authorization: Token $API_TOKEN" $TOWER_URL | jq -r '.job')
+
+# Loop to check the status of the job
+while true; do
+    job_status=$(curl -H "Authorization: Token $API_TOKEN" "https://your_ansible_tower_url/api/v2/jobs/$job_id/" | jq -r '.status')
+
+    if [[ "$job_status" == "successful" || "$job_status" == "failed" || "$job_status" == "error" ]]; then
+        break
+    fi
+
+    sleep 5
+done
+
+# Download the output of the job
+output_file="job_output.txt"
+curl -H "Authorization: Token $API_TOKEN" "https://your_ansible_tower_url/api/v2/jobs/$job_id/stdout/?format=txt" -o $output_file
