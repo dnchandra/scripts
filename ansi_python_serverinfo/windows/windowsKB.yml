@@ -1,0 +1,20 @@
+- name: Get list of installed hotfixes on a remote Windows machine
+  hosts: windows
+  gather_facts: no
+  tasks:
+    - name: Get list of installed hotfixes
+      win_updates:
+        category_names:
+          - SecurityUpdates
+          - CriticalUpdates
+          - DefinitionUpdates
+          - UpdateRollups
+          - FeaturePacks
+          - ServicePacks
+        state: installed
+      register: hotfixes
+
+    - name: Print list of installed hotfixes with KB numbers and installed date
+      debug:
+        msg: "{{ item.title }} (KB{{ item.hotfix_id }}) - Installed on {{ item.install_date }}"
+      loop: "{{ hotfixes.updates }}"
