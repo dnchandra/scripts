@@ -2,9 +2,13 @@
 - name: Gather Windows Update Information and IIS Details
   hosts: your_windows_hosts  # Replace with the target Windows hosts or group name
   gather_facts: no
+  become: yes
+  become_method: runas  # Run tasks with "Run as" elevated privileges
   tasks:
     - name: Get Windows Update Information and IIS Details
       win_shell: |
+        Import-Module WebAdministration -Force
+
         $kbUpdates = Get-WmiObject -Class Win32_QuickFixEngineering | Sort-Object -Property InstalledOn -Descending
         $lastReboot = Get-CimInstance -Class Win32_OperatingSystem | Select-Object -ExpandProperty LastBootUpTime
         $kbUpdatesInfo = @()
@@ -21,8 +25,6 @@
         $output += $kbUpdatesInfo
 
         if (Test-Path "C:\Windows\System32\WindowsPowerShell\v1.0\Modules\WebAdministration") {
-            Import-Module WebAdministration
-
             $iisWebsites = Get-Website | Select-Object Name, State
             $iisAppPools = Get-WebAppPoolState | Select-Object AppPoolName, State
             $iisInfo = @()
