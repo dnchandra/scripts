@@ -44,13 +44,17 @@
                 $output += $iisInfo
             }
 
-            $output
+            $output | Out-File "C:\Temp\output.txt"  # Output to a file
         }
 
-        # Run the script block explicitly as an administrator
+        # Run the script block explicitly as an administrator and redirect output to a file
         Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy Bypass", "-Command", $scriptBlock.ToString() -Verb RunAs
-      register: gathered_info
+      changed_when: false  # Mark task as unchanged, since it only writes to a file
+      register: ps_output
 
     - name: Display Gathered Information
-      debug:
+      win_shell: type C:\Temp\output.txt  # Read and display the contents of the output file
+      register: gathered_info
+
+    - debug:
         var: gathered_info.stdout_lines
