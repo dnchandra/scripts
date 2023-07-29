@@ -1,9 +1,9 @@
 ---
-- name: Gather Windows and IIS details
+- name: Gather Windows Update and IIS
   hosts: all
   gather_facts: no
   tasks:
-    - name: Run Script
+    - name: Run PowerShell
       win_shell: |
         param ($appCmdPath)
 
@@ -28,7 +28,7 @@
         if (Test-Path $appCmdPath) {
             $appPools = & $appCmdPath list apppool /text:name,state | Select-String -Pattern "\S"
             $appPools | ForEach-Object {
-                $appPoolDetails = $_.ToString() -split ":"
+                $appPoolDetails = $_ -split " "
                 $appPoolName = $appPoolDetails[0].Trim()
                 $appPoolState = $appPoolDetails[1].Trim()
                 $iisInfo += "$appPoolName - State: $appPoolState"
