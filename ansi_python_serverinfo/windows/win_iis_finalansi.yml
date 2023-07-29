@@ -1,6 +1,6 @@
 ---
 - name: Run PowerShell script on Windows hosts
-  hosts: all
+  hosts: windows
   tasks:
     - name: Execute PowerShell script using win_shell module
       win_shell: |
@@ -21,7 +21,7 @@
         $lastreboot = Get-CimInstance -ClassName win32_operatingsystem | select csname, lastbootuptime
 
         # Get the installed updates and security patches with KB details
-        $updates = Get-WmiObject -Class win32_quickfixengineering | select hotfixid, description, installedon
+        $updates = Get-WmiObject -Class win32_quickfixengineering | select description, hotfixid, installedon
 
         # Get the IIS website status
         Import-Module WebAdministration
@@ -34,14 +34,28 @@
         Write-Host "Hostname: $hostname"
         Write-Host "Last reboot time: $($lastreboot.lastbootuptime)"
         Write-Host "Installed updates and security patches with KB details:"
-        $updates | Format-Table -AutoSize
+        
+        # Loop through the updates and display the description, hotfixid and installedon properties
+        foreach ($update in $updates) {
+          Write-Host "$($update.description) : $($update.hotfixid) : $($update.installedon)"
+        }
+        
         Write-Host "IIS website status:"
-        $websites | Format-Table -AutoSize
+        
+        # Loop through the websites and display the name and state properties
+        foreach ($website in $websites) {
+          Write-Host "$($website.name) : $($website.state)"
+        }
+        
         Write-Host "Application pools status:"
         
         # Loop through the application pools and extract the name and status from the itemxpath and value properties
         foreach ($appool in $appools) {
           $name = ($appool.itemxpath -split "/")[-1]
+          # Remove the add[@name= part from the name
+          $name = $name -replace 'add\[@name=',''
+          # Remove the ] part from the name
+          $name = $name -replace '\]',''
           $status = $appool.value
           Write-Host "$name : $status"
         }
