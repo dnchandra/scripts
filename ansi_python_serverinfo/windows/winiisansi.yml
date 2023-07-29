@@ -1,0 +1,29 @@
+---
+- name: Gather Windows Update Information and IIS Details
+  hosts: all
+  gather_facts: no
+  tasks:
+    - name: Get Windows Update Information
+      win_updates:
+      register: windows_updates
+
+    - name: Get Last Reboot Time
+      win_shell: systeminfo | Select-String "System Boot Time:"
+      register: last_reboot
+
+    - name: Get IIS Application Pool Information
+      win_iis_webapppool_facts:
+      register: iis_apppools
+
+    - name: Display Gathered Information
+      debug:
+        msg: |
+          Last Reboot Time: {{ last_reboot.stdout_lines[0].split(":")[1].trim() }}
+          KB Updates:
+          {% for update in windows_updates.updates %}
+          {{ update.hotfix_id }} - {{ update.title }} - {{ update.installed_on | to_datetime | strftime('%Y-%m-%d') }}
+          {% endfor %}
+          IIS Websites:
+          {% for pool in iis_apppools.WebAppPools %}
+          {{ pool.Name }} - State: {{ pool.State }}
+          {% endfor %}
