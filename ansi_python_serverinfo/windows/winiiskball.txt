@@ -1,0 +1,44 @@
+---
+- name: Gather Windows Update Information and IIS Details
+  hosts: your_windows_hosts  # Replace with the target Windows hosts or group name
+  gather_facts: no
+  tasks:
+    - name: Get Windows Update Information and IIS Details
+      win_shell: |
+        $kbUpdates = Get-WmiObject -Class Win32_QuickFixEngineering | Sort-Object -Property InstalledOn -Descending
+        $lastReboot = Get-CimInstance -Class Win32_OperatingSystem | Select-Object -ExpandProperty LastBootUpTime
+        $kbUpdatesInfo = @()
+        foreach ($update in $kbUpdates) {
+            $kbNumber = $update.HotFixID
+            $patchName = $update.Description
+            $installedOn = $update.InstalledOn.ToShortDateString()
+            $kbUpdatesInfo += "$kbNumber - $patchName - $installedOn"
+        }
+        $kbUpdatesInfo += "Last Reboot Time: $lastReboot"
+
+        $iisWebsites = Get-Website | Select-Object Name, State
+        $iisAppPools = Get-WebAppPoolState | Select-Object AppPoolName, State
+        $iisInfo = @()
+        foreach ($website in $iisWebsites) {
+            $websiteName = $website.Name
+            $websiteState = $website.State
+            $iisInfo += "$websiteName - State: $websiteState"
+        }
+        $iisInfo += "---"
+        foreach ($appPool in $iisAppPools) {
+            $appPoolName = $appPool.AppPoolName
+            $appPoolState = $appPool.State
+            $iisInfo += "$appPoolName - State: $appPoolState"
+        }
+        
+        Write-Output "Last Reboot Time: $lastReboot"
+        Write-Output "KB Updates:"
+        $kbUpdatesInfo
+
+        Write-Output "IIS Websites:"
+        $iisInfo
+      register: gathered_info
+
+    - name: Display Gathered Information
+      debug:
+        var: gathered_info.stdout_lines
