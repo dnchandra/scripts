@@ -26,7 +26,7 @@
 
         if (Test-Path "C:\Windows\System32\WindowsPowerShell\v1.0\Modules\WebAdministration") {
             $iisWebsites = Get-Website | Select-Object Name, State
-            $iisAppPools = Get-WebAppPoolState
+            $iisAppPools = Get-ChildItem IIS:\AppPools | Select-Object Name, State
             $iisInfo = @()
             foreach ($website in $iisWebsites) {
                 $websiteName = $website.Name
