@@ -1,0 +1,14 @@
+---
+- name: Run PowerShell script on Windows hosts
+  hosts: windows
+  tasks:
+    - name: Copy PowerShell script to remote host
+      copy:
+        src: powershell_script.ps1
+        dest: C:\temp\powershell_script.ps1
+    - name: Execute PowerShell script using win_shell module
+      win_shell: C:\temp\powershell_script.ps1
+      register: output
+    - name: Display the output of the PowerShell script
+      debug:
+        var: output.stdout_lines
