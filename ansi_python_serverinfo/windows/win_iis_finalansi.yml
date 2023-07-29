@@ -1,0 +1,45 @@
+---
+- name: Run PowerShell script on Windows hosts
+  hosts: all
+  tasks:
+    - name: Execute PowerShell script using win_shell module
+      win_shell: |
+        # Check if running as administrator
+        $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
+
+        # If not, relaunch as administrator
+        if (-not $isAdmin) {
+            $arguments = "& '" + $myinvocation.mycommand.definition + "'"
+            Start-Process powershell -Verb runAs -ArgumentList $arguments -WindowStyle Hidden
+            Break
+        }
+
+        # Get the hostname
+        $hostname = hostname
+
+        # Get the last reboot time
+        $lastreboot = Get-CimInstance -ClassName win32_operatingsystem | select csname, lastbootuptime
+
+        # Get the installed updates and security patches with KB details
+        $updates = Get-WmiObject -Class win32_quickfixengineering | select description, hotfixid, installedon
+
+        # Get the IIS website status
+        Import-Module WebAdministration
+        $websites = Get-Website | select name, state
+
+        # Get the application pools status
+        $appools = Get-WebAppPoolState | select itemxpath, value
+
+        # Display the results
+        Write-Host "Hostname: $hostname"
+        Write-Host "Last reboot time: $($lastreboot.lastbootuptime)"
+        Write-Host "Installed updates and security patches with KB details:"
+        $updates | Format-Table -AutoSize
+        Write-Host "IIS website status:"
+        $websites | Format-Table -AutoSize
+        Write-Host "Application pools status:"
+        $appools | Format-Table -AutoSize
+      register: output
+    - name: Display the output of the PowerShell script
+      debug:
+        msg: "{{ output.stdout_lines }}"
