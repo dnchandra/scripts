@@ -1,0 +1,56 @@
+---
+- name: Gather Windows Update Information and IIS Details
+  hosts: your_windows_hosts  # Replace with the target Windows hosts or group name
+  gather_facts: no
+  tasks:
+    - name: Run PowerShell script explicitly as an administrator
+      win_shell: |
+        $scriptBlock = {
+            # Your original PowerShell script here
+            Import-Module WebAdministration -Force
+
+            $kbUpdates = Get-WmiObject -Class Win32_QuickFixEngineering | Sort-Object -Property InstalledOn -Descending
+            $lastReboot = Get-CimInstance -Class Win32_OperatingSystem | Select-Object -ExpandProperty LastBootUpTime
+            $kbUpdatesInfo = @()
+            foreach ($update in $kbUpdates) {
+                $kbNumber = $update.HotFixID
+                $patchName = $update.Description
+                $installedOn = $update.InstalledOn.ToShortDateString()
+                $kbUpdatesInfo += "$kbNumber - $patchName - $installedOn"
+            }
+
+            $output = @()
+            $output += "Last Reboot Time: $lastReboot"
+            $output += "KB Updates:"
+            $output += $kbUpdatesInfo
+
+            if (Test-Path "C:\Windows\System32\WindowsPowerShell\v1.0\Modules\WebAdministration") {
+                $iisWebsites = Get-Website | Select-Object Name, State
+                $iisAppPools = Get-WebAppPoolState
+                $iisInfo = @()
+                foreach ($website in $iisWebsites) {
+                    $websiteName = $website.Name
+                    $websiteState = $website.State
+                    $iisInfo += "$websiteName - State: $websiteState"
+                }
+                $iisInfo += "---"
+                foreach ($appPool in $iisAppPools) {
+                    $appPoolName = $appPool.Name
+                    $appPoolState = $appPool.State
+                    $iisInfo += "$appPoolName - State: $appPoolState"
+                }
+                
+                $output += "IIS Websites:"
+                $output += $iisInfo
+            }
+
+            $output
+        }
+
+        # Run the script block explicitly as an administrator
+        Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy Bypass", "-Command", $scriptBlock.ToString() -Verb RunAs
+      register: gathered_info
+
+    - name: Display Gathered Information
+      debug:
+        var: gathered_info.stdout_lines
