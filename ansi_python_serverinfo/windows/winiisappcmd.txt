@@ -1,9 +1,9 @@
 ---
-- name: Gather Windows Update Information and IIS Details
-  hosts: your_windows_hosts  # Replace with the target Windows hosts or group name
+- name: Gather Windows and IIS details
+  hosts: all
   gather_facts: no
   tasks:
-    - name: Run PowerShell script explicitly as an administrator
+    - name: Run Script
       win_shell: |
         param ($appCmdPath)
 
