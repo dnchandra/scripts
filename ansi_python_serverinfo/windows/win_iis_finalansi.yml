@@ -1,6 +1,6 @@
 ---
 - name: Run PowerShell script on Windows hosts
-  hosts: all
+  hosts: windows
   tasks:
     - name: Execute PowerShell script using win_shell module
       win_shell: |
@@ -38,7 +38,13 @@
         Write-Host "IIS website status:"
         $websites | Format-Table -AutoSize
         Write-Host "Application pools status:"
-        $appools | Format-Table -AutoSize
+        
+        # Loop through the application pools and extract the name and status from the itemxpath and value properties
+        foreach ($appool in $appools) {
+          $name = ($appool.itemxpath -split "/")[-1]
+          $status = $appool.value
+          Write-Host "$name : $status"
+        }
       register: output
     - name: Display the output of the PowerShell script
       debug:
