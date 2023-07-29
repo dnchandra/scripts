@@ -4,7 +4,7 @@
   gather_facts: no
   tasks:
     - name: Run PowerShell script explicitly as an administrator
-      win_shell: |
+      script: |
         $scriptBlock = {
             # Your original PowerShell script here
             Import-Module WebAdministration -Force
@@ -39,18 +39,13 @@
                 $output += $iisInfo
             }
 
-            $output | Out-File "C:\\Temp\\output.txt"  # Output to a file
+            $output
         }
 
-        # Run the script block explicitly as an administrator and redirect output to a file
+        # Run the script block explicitly as an administrator
         Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy Bypass", "-Command", $scriptBlock.ToString() -Verb RunAs
-      changed_when: false  # Mark task as unchanged, since it only writes to a file
       register: ps_output
 
     - name: Display Gathered Information
-      win_shell: |
-        Get-Content "C:\\Temp\\output.txt"
-      register: gathered_info
-
-    - debug:
-        var: gathered_info.stdout_lines
+      debug:
+        var: ps_output.stdout_lines
