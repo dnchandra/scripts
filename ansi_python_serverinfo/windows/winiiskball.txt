@@ -26,7 +26,7 @@
 
         if (Test-Path "C:\Windows\System32\WindowsPowerShell\v1.0\Modules\WebAdministration") {
             $iisWebsites = Get-Website | Select-Object Name, State
-            $iisAppPools = Get-WebAppPoolState | Select-Object AppPoolName, State
+            $iisAppPools = Get-WebAppPoolState
             $iisInfo = @()
             foreach ($website in $iisWebsites) {
                 $websiteName = $website.Name
@@ -35,8 +35,8 @@
             }
             $iisInfo += "---"
             foreach ($appPool in $iisAppPools) {
-                $appPoolName = $appPool.AppPoolName
-                $appPoolState = $appPool.State
+                $appPoolName = $appPool.Name
+                $appPoolState = $appPool.Value
                 $iisInfo += "$appPoolName - State: $appPoolState"
             }
             
