@@ -5,6 +5,8 @@
   tasks:
     - name: Get Windows Update Information and IIS Details
       win_shell: |
+        Import-Module WebAdministration
+
         $kbUpdates = Get-WmiObject -Class Win32_QuickFixEngineering | Sort-Object -Property InstalledOn -Descending
         $lastReboot = Get-CimInstance -Class Win32_OperatingSystem | Select-Object -ExpandProperty LastBootUpTime
         $kbUpdatesInfo = @()
@@ -14,7 +16,6 @@
             $installedOn = $update.InstalledOn.ToShortDateString()
             $kbUpdatesInfo += "$kbNumber - $patchName - $installedOn"
         }
-        $kbUpdatesInfo += "Last Reboot Time: $lastReboot"
 
         $iisWebsites = Get-Website | Select-Object Name, State
         $iisAppPools = Get-WebAppPoolState | Select-Object AppPoolName, State
@@ -30,13 +31,15 @@
             $appPoolState = $appPool.State
             $iisInfo += "$appPoolName - State: $appPoolState"
         }
-        
-        Write-Output "Last Reboot Time: $lastReboot"
-        Write-Output "KB Updates:"
-        $kbUpdatesInfo
 
-        Write-Output "IIS Websites:"
-        $iisInfo
+        $output = @()
+        $output += "Last Reboot Time: $lastReboot"
+        $output += "KB Updates:"
+        $output += $kbUpdatesInfo
+        $output += "IIS Websites:"
+        $output += $iisInfo
+
+        $output
       register: gathered_info
 
     - name: Display Gathered Information
