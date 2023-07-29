@@ -1,6 +1,6 @@
 ---
 - name: Run PowerShell script on Windows hosts
-  hosts: windows
+  hosts: all
   tasks:
     - name: Execute PowerShell script using win_shell module
       win_shell: |
@@ -21,7 +21,7 @@
         $lastreboot = Get-CimInstance -ClassName win32_operatingsystem | select csname, lastbootuptime
 
         # Get the installed updates and security patches with KB details
-        $updates = Get-WmiObject -Class win32_quickfixengineering | select description, hotfixid, installedon
+        $updates = Get-WmiObject -Class win32_quickfixengineering | select hotfixid, description, installedon
 
         # Get the IIS website status
         Import-Module WebAdministration
