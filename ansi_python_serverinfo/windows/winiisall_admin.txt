@@ -44,7 +44,7 @@
                 $output += $iisInfo
             }
 
-            $output | Out-File "C:\Temp\output.txt"  # Output to a file
+            $output | Out-File "C:\\Temp\\output.txt"  # Output to a file
         }
 
         # Run the script block explicitly as an administrator and redirect output to a file
@@ -53,7 +53,8 @@
       register: ps_output
 
     - name: Display Gathered Information
-      win_shell: type C:\Temp\output.txt  # Read and display the contents of the output file
+      win_shell: |
+        Get-Content "C:\\Temp\\output.txt"
       register: gathered_info
 
     - debug:
