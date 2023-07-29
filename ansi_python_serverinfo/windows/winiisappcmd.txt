@@ -26,9 +26,9 @@
 
         $iisInfo = @()
         if (Test-Path $appCmdPath) {
-            $appPools = & $appCmdPath list apppool /text:name,state
+            $appPools = & $appCmdPath list apppool /text:name,state | Select-String -Pattern "\S"
             $appPools | ForEach-Object {
-                $appPoolDetails = $_ -split ":"
+                $appPoolDetails = $_.ToString() -split ":"
                 $appPoolName = $appPoolDetails[0].Trim()
                 $appPoolState = $appPoolDetails[1].Trim()
                 $iisInfo += "$appPoolName - State: $appPoolState"
