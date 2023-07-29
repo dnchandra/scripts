@@ -1,0 +1,56 @@
+---
+- name: Gather Windows Update Information and IIS Details
+  hosts: your_windows_hosts  # Replace with the target Windows hosts or group name
+  gather_facts: no
+  tasks:
+    - name: Run PowerShell script explicitly as an administrator
+      win_shell: |
+        $scriptBlock = {
+            # Your original PowerShell script here
+            Import-Module WebAdministration -Force
+
+            $kbUpdates = Get-WmiObject -Class Win32_QuickFixEngineering | Sort-Object -Property InstalledOn -Descending
+            $lastReboot = Get-CimInstance -Class Win32_OperatingSystem | Select-Object -ExpandProperty LastBootUpTime
+            $kbUpdatesInfo = @()
+            foreach ($update in $kbUpdates) {
+                $kbNumber = $update.HotFixID
+                $patchName = $update.Description
+                $installedOn = $update.InstalledOn.ToShortDateString()
+                $kbUpdatesInfo += "$kbNumber - $patchName - $installedOn"
+            }
+
+            $output = @()
+            $output += "Last Reboot Time: $lastReboot"
+            $output += "KB Updates:"
+            $output += $kbUpdatesInfo
+
+            $iisInfo = @()
+            $appCmdPath = "C:\\Windows\\System32\\inetsrv\\appcmd.exe"
+            if (Test-Path $appCmdPath) {
+                $appPools = & $appCmdPath list apppool /text:name,state
+                $appPools | ForEach-Object {
+                    $appPoolDetails = $_ -split ":"
+                    $appPoolName = $appPoolDetails[0].Trim()
+                    $appPoolState = $appPoolDetails[1].Trim()
+                    $iisInfo += "$appPoolName - State: $appPoolState"
+                }
+
+                $output += "IIS Websites:"
+                $output += $iisInfo
+            }
+
+            $output | Out-File "C:\\Temp\\output.txt"  # Output to a file
+        }
+
+        # Run the script block explicitly as an administrator and redirect output to a file
+        Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy Bypass", "-Command", $scriptBlock.ToString() -Verb RunAs
+      changed_when: false  # Mark task as unchanged, since it only writes to a file
+      register: ps_output
+
+    - name: Display Gathered Information
+      win_shell: |
+        Get-Content "C:\\Temp\\output.txt"
+      register: gathered_info
+
+    - debug:
+        var: gathered_info.stdout_lines
