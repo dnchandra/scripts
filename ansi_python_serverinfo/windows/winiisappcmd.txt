@@ -7,6 +7,8 @@
       script: |
         $scriptBlock = {
             # Your original PowerShell script here
+            param ($appCmdPath)
+
             Import-Module WebAdministration -Force
 
             $kbUpdates = Get-WmiObject -Class Win32_QuickFixEngineering | Sort-Object -Property InstalledOn -Descending
@@ -25,7 +27,6 @@
             $output += $kbUpdatesInfo
 
             $iisInfo = @()
-            $appCmdPath = "C:\\Windows\\System32\\inetsrv\\appcmd.exe"
             if (Test-Path $appCmdPath) {
                 $appPools = & $appCmdPath list apppool /text:name,state
                 $appPools | ForEach-Object {
@@ -42,8 +43,14 @@
             $output
         }
 
-        # Run the script block explicitly as an administrator
-        Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy Bypass", "-Command", $scriptBlock.ToString() -Verb RunAs
+        $psCmd = $scriptBlock.ToString()
+        $psCmdPath = "C:\\Temp\\script.ps1"
+        Set-Content -Path $psCmdPath -Value $psCmd
+
+        # Run the PowerShell script explicitly as an administrator
+        Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy Bypass", "-File", $psCmdPath -Verb RunAs -Wait
+      vars:
+        appCmdPath: "C:\\Windows\\System32\\inetsrv\\appcmd.exe"
       register: ps_output
 
     - name: Display Gathered Information
