@@ -1,0 +1,75 @@
+import difflib
+from bs4 import BeautifulSoup
+
+# Input file variables
+pre_html_file = "server_details_pre.html"
+html_file = "server_details.html"
+final_html_file = "server_final.html"
+
+def read_html_file(html_file):
+    with open(html_file, 'r', encoding='utf-8') as file:
+        return file.read()
+
+def extract_hostname_reboot_updates(html_file):
+    with open(html_file, 'r', encoding='utf-8') as file:
+        soup = BeautifulSoup(file, 'html.parser')
+        data_rows = soup.find_all('tr')
+        hostnames = []
+        reboot_times = []
+        installed_updates = []
+        iis_statuses = []
+        app_pool_statuses = []
+        for row in data_rows[1:]:  # Skip the header row
+            columns = row.find_all('td')
+            hostnames.append(columns[0].text.strip())
+            reboot_times.append(columns[1].text.strip())
+            installed_updates.append(columns[2].text.strip())
+            iis_statuses.append(columns[3].text.strip())
+            app_pool_statuses.append(columns[4].text.strip())
+        return hostnames, reboot_times, installed_updates, iis_statuses, app_pool_statuses
+
+def compare_installed_updates(pre_updates, current_updates):
+    added_updates = list(set(current_updates) - set(pre_updates))
+    removed_updates = list(set(pre_updates) - set(current_updates))
+    return added_updates, removed_updates
+
+def compare_and_generate_final_html(pre_html_file, html_file, final_html_file):
+    pre_hostnames, pre_reboot_times, pre_installed_updates, _, _ = extract_hostname_reboot_updates(pre_html_file)
+    html_hostnames, html_reboot_times, html_installed_updates, html_iis_statuses, html_app_pool_statuses = extract_hostname_reboot_updates(html_file)
+
+    # Get the set of unique hostnames from both files
+    all_hostnames = sorted(set(pre_hostnames) | set(html_hostnames))
+
+    # Update the "server_final.html" file with data from both files, including additional rows for missing hostnames
+    with open(final_html_file, 'w', encoding='utf-8') as file:
+        file.write('<!DOCTYPE html>\n<html>\n<head>\n<title>Server Final</title>\n<style>\n.stopped-text { color: red; }\n.server-health-text { color: red; }\n.center-text { text-align: center; }\n\n/* Responsive Styles */\nbody {\n  font-size: 16px;\n}\n\n@media only screen and (max-width: 768px) {\n  body {\n    font-size: 14px;\n  }\n  table {\n    width: 100%;\n  }\n}\n</style>\n</head>\n<body>\n<h1 class="center-text">Windows Server Report</h1>\n<table border="1" width="100%">\n<tr>\n<th>Hostname</th>\n<th>Last Reboot Time</th>\n<th>Previous Installed Updates</th>\n<th>Current Installed Updates</th>\n<th>Newly added or Removed Updates</th>\n<th>IIS Website Status</th>\n<th>Application Pools Status</th>\n</tr>\n')
+        for hostname in all_hostnames:
+            if hostname in pre_hostnames and hostname in html_hostnames:
+                index_pre = pre_hostnames.index(hostname)
+                index_html = html_hostnames.index(hostname)
+                pre_updates = pre_installed_updates[index_pre].split('\n')
+                current_updates = html_installed_updates[index_html].split('\n')
+                added_updates, removed_updates = compare_installed_updates(pre_updates, current_updates)
+                added_updates_str = '<br>'.join(added_updates) if added_updates else 'None'
+                removed_updates_str = '<br>'.join(removed_updates) if removed_updates else 'None'
+                file.write('<tr>\n<td>{}</td>\n<td>{}</td>\n<td>{}</td>\n<td>{}</td>\n<td><span style="color:green">Added:</span> {}<br><span style="color:red">Removed:</span> {}</td>\n<td>{}</td>\n<td>{}</td>\n</tr>\n'.format(hostname, html_reboot_times[index_html], pre_installed_updates[index_pre].replace("\n", "<br>"), html_installed_updates[index_html].replace("\n", "<br>"), added_updates_str, removed_updates_str, html_iis_statuses[index_html].replace('Stopped', '<span class="stopped-text">Stopped</span>'), html_app_pool_statuses[index_html].replace("\n", "<br>").replace('Stopped', '<span class="stopped-text">Stopped</span>')))
+            elif hostname in pre_hostnames:
+                index_pre = pre_hostnames.index(hostname)
+                pre_updates = pre_installed_updates[index_pre].split('\n')
+                file.write('<tr>\n<td>{}</td>\n<td><span class="server-health-text">Check Server Health</span></td>\n<td>{}</td>\n<td>NA</td>\n<td>NA</td>\n<td class="stopped-text">NA</td>\n<td class="stopped-text">NA</td>\n</tr>\n'.format(hostname, pre_installed_updates[index_pre].replace("\n", "<br>")))
+            elif hostname in html_hostnames:
+                index_html = html_hostnames.index(hostname)
+                current_updates = html_installed_updates[index_html].split('\n')
+                added_updates_str = '<br>'.join(current_updates) if current_updates else 'None'
+                file.write('<tr>\n<td>{}</td>\n<td>{}</td>\n<td>NA</td>\n<td>{}</td>\n<td><span style="color:green">Added:</span> {}<br><span style="color:red">Removed:</span> {}</td>\n<td>{}</td>\n<td>{}</td>\n</tr>\n'.format(hostname, html_reboot_times[index_html], html_installed_updates[index_html].replace("\n", "<br>"), added_updates_str, 'None', html_iis_statuses[index_html].replace('Stopped', '<span class="stopped-text">Stopped</span>'), html_app_pool_statuses[index_html].replace("\n", "<br>").replace('Stopped', '<span class="stopped-text">Stopped</span>')))
+            else:
+                file.write('<tr>\n<td>{}</td>\n<td><span class="server-health-text">Check Server Health</span></td>\n<td>NA</td>\n<td>NA</td>\n<td>NA</td>\n<td class="stopped-text">NA</td>\n<td class="stopped-text">NA</td>\n</tr>\n'.format(hostname))
+                # Also, update the "Previous Installed Updates" value as "NA" for the extra hostname
+                index_html = html_hostnames.index(hostname)
+                current_updates = html_installed_updates[index_html].split('\n')
+                added_updates_str = '<br>'.join(current_updates) if current_updates else 'None'
+                file.write('<tr>\n<td>{}</td>\n<td>{}</td>\n<td>NA</td>\n<td>{}</td>\n<td><span style="color:green">Added:</span> {}<br><span style="color:red">Removed:</span> {}</td>\n<td>{}</td>\n<td>{}</td>\n</tr>\n'.format(hostname, html_reboot_times[index_html], html_installed_updates[index_html].replace("\n", "<br>"), added_updates_str, 'None', html_iis_statuses[index_html].replace('Stopped', '<span class="stopped-text">Stopped</span>'), html_app_pool_statuses[index_html].replace("\n", "<br>").replace('Stopped', '<span class="stopped-text">Stopped</span>')))
+        file.write('</table>\n</body>\n</html>')
+
+# Compare and generate the final HTML file
+compare_and_generate_final_html(pre_html_file, html_file, final_html_file)
