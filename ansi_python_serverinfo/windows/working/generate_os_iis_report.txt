@@ -1,7 +1,7 @@
 import re
 
 # Read the content of the input file
-with open('inputfile.txt', 'r') as file:
+with open('ansible_output.txt', 'r') as file:
     data = file.read()
 
 # Function to extract values between two patterns
@@ -21,8 +21,9 @@ html_content = "<html>\n<head>\n<title>Windows Server Details</title>\n</head>\n
 html_content += "<table border='1'>\n<tr><th>Hostname</th><th>Last Reboot Time</th><th>Installed Updates</th>"
 html_content += "<th>IIS Website Status</th><th>Application Pools Status</th></tr>\n"
 
-# Split the data into individual server blocks
-server_blocks = re.findall(r'ok:.*?\{.*?"msg": \[(.*?)\]\s*\}', data, re.DOTALL)
+# Split the data into individual server blocks and sort based on hostname
+server_blocks = sorted(re.findall(r'ok:.*?\{.*?"msg": \[(.*?)\]\s*\}', data, re.DOTALL),
+                       key=lambda details: extract_values(r'"Hostname:",', r'"Last reboot time:",', details))
 
 # Process each server's details separately
 for server_details in server_blocks:
@@ -44,7 +45,7 @@ for server_details in server_blocks:
 html_content += "</table>\n</body>\n</html>"
 
 # Save the HTML content to a file
-with open('server_details.html', 'w') as file:
+with open('server_details_pre.html', 'w') as file:
     file.write(html_content)
 
-print("HTML file 'server_details.html' has been generated.")
+print("HTML file 'server_details_pre.html' has been generated.")
