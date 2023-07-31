@@ -1,0 +1,30 @@
+import requests
+
+# Execute Ansible Tower job and download output
+response = requests.post(
+    f"https://{TOWER_URL}/api/v2/job_templates/{JOB_TEMPLATE_ID}/launch/",
+    auth=(TOWER_USER, TOWER_PASSWORD),
+)
+job_id = response.json()["job"]
+
+# Wait for job to complete
+while True:
+    response = requests.get(
+        f"https://{TOWER_URL}/api/v2/jobs/{job_id}/",
+        auth=(TOWER_USER, TOWER_PASSWORD),
+    )
+    status = response.json()["status"]
+    if status == "successful":
+        break
+    elif status == "failed":
+        print("Job failed")
+        exit(1)
+    time.sleep(5)
+
+# Download output
+response = requests.get(
+    f"https://{TOWER_URL}/api/v2/jobs/{job_id}/stdout?format=txt_download",
+    auth=(TOWER_USER, TOWER_PASSWORD),
+)
+with open(f"job_{job_id}.log", "wb") as f:
+    f.write(response.content)
