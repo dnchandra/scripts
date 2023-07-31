@@ -1,0 +1,27 @@
+---
+- name: Execute Ansible Tower Job and Transfer Output
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Launch Ansible Tower Job
+      tower_job_launch:
+        tower_username: "{{ ansible_user }}"
+        tower_password: "{{ ansible_password }}"
+        tower_host: "https://your_tower_host"
+        job_template: "Your Job Template Name"
+        survey_passwords: true  # Enable this to pass credentials
+        tower_credential: "Your Credential Name"  # The Tower credential to use for nested job
+      register: job_result
+
+    - name: Save Tower Job Output to File
+      copy:
+        content: "{{ job_result.stdout }}"
+        dest: /tmp/tower_job_output.txt
+      delegate_to: server1
+
+    - name: Transfer Output File to Delegate_to Host
+      copy:
+        src: /tmp/tower_job_output.txt
+        dest: /path/to/destination/on/server1/tower_job_output.txt
+      delegate_to: server1
