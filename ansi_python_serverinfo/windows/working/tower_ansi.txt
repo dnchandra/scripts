@@ -1,0 +1,15 @@
+- name: Execute Ansible Tower job and download output
+  tower_job_launch:
+    job_template: <job_template_name>
+    tower_username: <tower_username>
+    tower_password: <tower_password>
+    tower_host: <tower_host>
+    tower_verify_ssl: False
+  register: job_result
+
+- name: Download Ansible Tower job output
+  uri:
+    url: https://${TOWER_URL}/api/v2/jobs/${job_result['job']['id']}/stdout?format=txt_download
+    user: ${TOWER_USER}
+    password: ${TOWER_PASSWORD}
+    dest: /path/to/job_${job_result['job']['id']}.log
