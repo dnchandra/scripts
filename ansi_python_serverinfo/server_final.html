@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+ <head>
+  <title>
+   Server Final
+  </title>
+  <style>
+   .stopped-text { color: red; }
+.server-health-text { color: red; }
+.center-text { text-align: center; }
+
+/* Responsive Styles */
+body {
+  font-size: 16px;
+}
+
+@media only screen and (max-width: 768px) {
+  body {
+    font-size: 14px;
+  }
+  table {
+    width: 100%;
+  }
+}
+  </style>
+ </head>
+ <body>
+  <h1 class="center-text">
+   Windows Server Report
+   <br/>
+   <p class="center-text">
+    Report generation Time: 2023-07-31 07:45:45
+   </p>
+  </h1>
+  <table border="1" width="100%">
+   <tr>
+    <th>
+     Hostname
+    </th>
+    <th>
+     Last Reboot Time
+    </th>
+    <th>
+     Previous Installed Updates
+    </th>
+    <th>
+     Current Installed Updates
+    </th>
+    <th>
+     Newly added or Removed Updates
+    </th>
+    <th>
+     IIS Website Status
+    </th>
+    <th>
+     Application Pools Status
+    </th>
+   </tr>
+   <tr>
+    <td>
+     aakrhel001
+    </td>
+    <td>
+     07/15/2023 20:20:06
+    </td>
+    <td>
+     KB5028251 - Update - 07/28/2023
+     <br/>
+     KB5028752 - Security Update - 07/22/2023
+     <br/>
+     KB5028853 - Security Update - 07/13/2023
+    </td>
+    <td>
+     KB5028752 - Security Update - 07/22/2023
+     <br/>
+     KB5028854 - Security Update - 07/13/2023
+    </td>
+    <td>
+     <span style="color:green">
+      Added:
+     </span>
+     KB5028854 - Security Update - 07/13/2023
+     <br/>
+     KB5028752 - Security Update - 07/22/2023
+     <br/>
+     <span style="color:red">
+      Removed:
+     </span>
+     KB5028251 - Update - 07/28/2023
+     <br/>
+     KB5028752 - Security Update - 07/22/2023
+     <br/>
+     KB5028853 - Security Update - 07/13/2023
+    </td>
+    <td>
+     Direct Website - Started
+    </td>
+    <td>
+     .NET v2.0 -
+     <span class="stopped-text">
+      Stopped
+     </span>
+     <br/>
+     Classic .NET Apppool - Started
+     <br/>
+     DefaultAppPool - Started
+     <br/>
+     P_DNC_DM1 - Started
+    </td>
+   </tr>
+   <tr>
+    <td>
+     aakrhel002
+    </td>
+    <td>
+     07/14/2023 20:20:06
+    </td>
+    <td>
+     KB5028252 - Update - 7/28/2023
+     <br/>
+     KB5028753 - Security Update - 7/28/2023
+     <br/>
+     KB5028854 - Security Update - 7/13/2023
+    </td>
+    <td>
+     KB5028252 - Update - 7/28/2023
+     <br/>
+     KB5028753 - Security Update - 7/28/2023
+     <br/>
+     KB5028854 - Security Update - 7/13/2023
+    </td>
+    <td>
+     <span style="color:green">
+      Added:
+     </span>
+     None
+     <br/>
+     <span style="color:red">
+      Removed:
+     </span>
+     None
+    </td>
+    <td>
+     Direct Website - Started
+    </td>
+    <td>
+     .NET v2.0 - Started
+     <br/>
+     Classic .NET Apppool - Started
+     <br/>
+     DefaultAppPool - Started
+     <br/>
+     P_DNC_DM2 - Started
+    </td>
+   </tr>
+   <tr>
+    <td>
+     aakrhel003
+    </td>
+    <td>
+     <span class="server-health-text">
+      Check Server Health
+     </span>
+    </td>
+    <td>
+     KB5028254 - Update - 07/28/2023
+     <br/>
+     KB5028752 - Security Update - 07/28/2023
+     <br/>
+     KB5028851 - Security Update - 07/18/2023
+    </td>
+    <td>
+     NA
+    </td>
+    <td>
+     NA
+    </td>
+    <td class="stopped-text">
+     NA
+    </td>
+    <td class="stopped-text">
+     NA
+    </td>
+   </tr>
+   <tr>
+    <td>
+     aakrhel004
+    </td>
+    <td>
+     07/15/2023 20:20:06
+    </td>
+    <td>
+     NA
+    </td>
+    <td>
+     KB5028254 - Update - 07/28/2023
+     <br/>
+     KB5028752 - Security Update - 07/28/2023
+     <br/>
+     KB5028851 - Security Update - 07/18/2023
+    </td>
+    <td>
+     <span style="color:green">
+      Added:
+     </span>
+     KB5028254 - Update - 07/28/2023
+     <br/>
+     KB5028752 - Security Update - 07/28/2023
+     <br/>
+     KB5028851 - Security Update - 07/18/2023
+     <br/>
+     <span style="color:red">
+      Removed:
+     </span>
+     None
+    </td>
+    <td>
+     Direct Website - Started
+    </td>
+    <td>
+     .NET v2.0 - Started
+     <br/>
+     Classic .NET Apppool - Started
+     <br/>
+     DefaultAppPool - Started
+     <br/>
+     P_DNC_DM3 -
+     <span class="stopped-text">
+      Stopped
+     </span>
+    </td>
+   </tr>
+  </table>
+ </body>
+</html>
