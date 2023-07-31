@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# Execute Ansible Tower job and download output
+curl -s -u ${TOWER_USER}:${TOWER_PASSWORD} -X POST https://${TOWER_URL}/api/v2/job_templates/${JOB_TEMPLATE_ID}/launch/ > /dev/null
+
+# Wait for job to complete
+while true; do
+    status=$(curl -s -u ${TOWER_USER}:${TOWER_PASSWORD} https://${TOWER_URL}/api/v2/jobs/${JOB_ID}/ | jq -r '.status')
+    if [[ "$status" == "successful" ]]; then
+        break
+    elif [[ "$status" == "failed" ]]; then
+        echo "Job failed"
+        exit 1
+    fi
+    sleep 5
+done
+
+# Download output
+curl --silent -u ${TOWER_USER}:${TOWER_PASSWORD} -JL https://${TOWER_URL}/api/v2/jobs/${JOB_ID}/stdout?format=txt_download -o job_${JOB_ID}.log
