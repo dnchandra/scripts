@@ -1,0 +1,51 @@
+import re
+
+# Read the content of the input file
+with open('ansible_output_pre.txt', 'r') as file:
+    data = file.read()
+
+# Function to extract values between two patterns
+def extract_values(pattern_start, pattern_end, details):
+    pattern = re.compile(fr"{pattern_start}\s*(.*?)\s*{pattern_end}", re.DOTALL)
+    match = re.search(pattern, details)
+    return match.group(1).strip() if match else ""
+
+# Function to check if the status is stopped and add style attribute if needed
+def check_stopped(status_text):
+    if "Stopped" in status_text:
+        return status_text.replace("Stopped", '<span style="color: red;">Stopped</span>')
+    return status_text
+
+# Prepare the HTML content
+html_content = "<html>\n<head>\n<title>Windows Server Details</title>\n</head>\n<body>\n"
+html_content += "<table border='1'>\n<tr><th>Hostname</th><th>Last Reboot Time</th><th>Installed Updates</th>"
+html_content += "<th>IIS Website Status</th><th>Application Pools Status</th></tr>\n"
+
+# Split the data into individual server blocks and sort based on hostname
+server_blocks = sorted(re.findall(r'ok:.*?\{.*?"msg": \[(.*?)\]\s*\}', data, re.DOTALL),
+                       key=lambda details: extract_values(r'"Hostname:",', r'"Last reboot time:",', details))
+
+# Process each server's details separately
+for server_details in server_blocks:
+    hostname = extract_values(r'"Hostname:",', r'"Last reboot time:",', server_details).replace('"', '').replace(',', '')
+    reboot_time = extract_values(r'"Last reboot time:",', r'"Installed Updates:",', server_details).replace('"', '').replace(',', '')
+    installed_updates = extract_values(r'"Installed Updates:",', r'"IIS website status:",', server_details).replace('"', '').replace(',', '<br>')
+    iis_status = extract_values(r'"IIS website status:",', r'"Application pools status:",', server_details).replace('"', '').replace(',', '<br>')
+    app_pools_status = extract_values(r'"Application pools status:",', r'\s*(?:\}|$)', server_details).replace('"', '').replace(',', '<br>')
+
+    # Add the row for each server to the HTML table
+    html_content += "<tr>"
+    html_content += f"<td>{hostname}</td>"
+    html_content += f"<td>{reboot_time}</td>"
+    html_content += f"<td>{installed_updates}</td>"
+    html_content += f"<td>{check_stopped(iis_status)}</td>"
+    html_content += f"<td>{check_stopped(app_pools_status)}</td>"
+    html_content += "</tr>\n"
+
+html_content += "</table>\n</body>\n</html>"
+
+# Save the HTML content to a file
+with open('server_details_pre.html', 'w') as file:
+    file.write(html_content)
+
+print("HTML file 'server_details_pre.html' has been generated.")
