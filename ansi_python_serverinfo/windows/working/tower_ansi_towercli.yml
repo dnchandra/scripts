@@ -1,0 +1,38 @@
+---
+- name: Execute Ansible Tower Job and Download Output
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Include Vaulted Tower Credentials
+      include_vars: tower_credentials.yml
+      vars_files:
+        - vaulted_tower_credentials.yml
+      tags: [vault]
+
+    - name: Launch Ansible Tower Job
+      tower_job_launch:
+        job_template: "{{ JOB_TEMPLATE_ID }}"
+        tower_username: "{{ tower_username }}"
+        tower_password: "{{ tower_password }}"
+      register: job_launch_result
+
+    - name: Wait for Job Completion
+      tower_job_wait_for_job:
+        job_id: "{{ job_launch_result.job.id }}"
+        tower_username: "{{ tower_username }}"
+        tower_password: "{{ tower_password }}"
+        timeout: 600
+
+    - name: Download Tower Job Output
+      tower_job_stdout:
+        job_id: "{{ job_launch_result.job.id }}"
+        tower_username: "{{ tower_username }}"
+        tower_password: "{{ tower_password }}"
+      register: job_output
+
+    - name: Save Ansible Tower Job Output to File
+      copy:
+        content: "{{ job_output.stdout }}"
+        dest: "/path/to/job_{{ job_launch_result.job.id }}.log"
+      when: job_output.stdout is defined
+      delegate_to: localhost
