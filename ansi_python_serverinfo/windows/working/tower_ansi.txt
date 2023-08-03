@@ -1,15 +1,44 @@
-- name: Execute Ansible Tower job and download output
-  tower_job_launch:
-    job_template: <job_template_name>
-    tower_username: <tower_username>
-    tower_password: <tower_password>
-    tower_host: <tower_host>
-    tower_verify_ssl: False
-  register: job_result
+---
+- name: Execute Ansible Tower Job and Download Output
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Define Tower API URL
+      set_fact:
+        tower_api_url: "https://${TOWER_URL}/api/v2"
 
-- name: Download Ansible Tower job output
-  uri:
-    url: https://${TOWER_URL}/api/v2/jobs/${job_result['job']['id']}/stdout?format=txt_download
-    user: ${TOWER_USER}
-    password: ${TOWER_PASSWORD}
-    dest: /path/to/job_${job_result['job']['id']}.log
+    - name: Launch Ansible Tower Job
+      uri:
+        url: "{{ tower_api_url }}/job_templates/{{ JOB_TEMPLATE_ID }}/launch/"
+        method: POST
+        user: "{{ TOWER_USER }}"
+        password: "{{ TOWER_PASSWORD }}"
+        validate_certs: no
+      register: job_launch_response
+      retries: 3
+      until: job_launch_response.status == 201
+      delay: 10
+
+    - name: Wait for Job Completion
+      uri:
+        url: "{{ job_launch_response.location }}"
+        method: GET
+        user: "{{ TOWER_USER }}"
+        password: "{{ TOWER_PASSWORD }}"
+        validate_certs: no
+      register: job_status_response
+      until: job_status_response.json.job.status == "successful" or job_status_response.json.job.status == "failed"
+      retries: 60
+      delay: 10
+
+    - name: Define Job Output URL
+      set_fact:
+        job_output_url: "{{ tower_api_url }}/jobs/{{ job_status_response.json.job.id }}/stdout?format=txt_download"
+
+    - name: Download Tower Job Output
+      uri:
+        url: "{{ job_output_url }}"
+        user: "{{ TOWER_USER }}"
+        password: "{{ TOWER_PASSWORD }}"
+        dest: "/path/to/job_{{ job_status_response.json.job.id }}.log"
+      delegate_to: localhost
