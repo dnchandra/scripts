@@ -89,7 +89,8 @@ with open(final_html_file, 'r+', encoding='utf-8') as file:
     h1_tag.append(style_tag)
     
     time_tag = soup.new_tag("p", attrs={"class": "center-text report-time"})  # Add the "report-time" class
-    time_tag.string = "Report Time: {}".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    time_tag.string = "Report Time: {}".format((datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d %H:%M:%S %Z"))
+    #time_tag.string = "Report Time: {}".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     h1_tag.append(time_tag)
     
     file.seek(0)
