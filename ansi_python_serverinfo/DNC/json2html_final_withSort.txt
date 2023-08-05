@@ -1,0 +1,34 @@
+import json
+from datetime import datetime
+
+with open('json/serverinfo.json', 'r') as fcc_file:
+    fcc_data = json.load(fcc_file)
+
+# Sort the data by the "Hostname" field
+fcc_data_sorted = sorted(fcc_data, key=lambda x: x["Hostname"])
+
+# Creating an HTML file
+Func = open("index.html", "w")
+htmlStr = "<html>\n<head>\n<title> \nJSON to HTML \n\
+           </title>\n</head> <body bgcolor='#2D2B32'><h1 align='center' style='color:#1274B8'>Server Information</u></h1>\n<h3 align='center' style='color:#1274B8'>Report Date: " + datetime.now().strftime("%d/%m/%Y %H:%M:%S") + "</h3>\
+           \n<table width = '100%' border='1'>\n"
+
+htmlStr += "\n<thead style='color: #fff; background: #1274B8;'><tr>"
+for key in fcc_data_sorted[0]:
+    htmlStr += "<th>" + key.title() + "</th>"
+htmlStr += "\n</thead></tr>"
+
+			  
+for value in fcc_data_sorted:
+    htmlStr += "\n<tr>"
+    for rows in value:
+        htmlStr += "\n<td style='text-align: center;color:white'>" + str(value[rows]) + "</td>"
+								 
+    htmlStr += "\n</tr>"
+htmlStr += "\n</table>\n</body>\n</html>"
+
+# Adding input data to the HTML file
+Func.write(htmlStr)
+
+# Saving the data into the HTML file
+Func.close()
