@@ -1,0 +1,40 @@
+- name: Test Network Connectivity
+  hosts: "{{ servers }}"
+  vars:
+    destinations: ""  # Dynamic destination IPs string from Ansible Tower
+    ports: ""         # Dynamic ports string from Ansible Tower
+    protocol: ""      # Dynamic protocol from Ansible Tower
+
+  tasks:
+    - name: Split IP and Port Strings
+      set_fact:
+        destinations_list: "{{ destinations.split(',') | map('trim') | list }}"
+        ports_list: "{{ ports.split(',') | map('trim') | list }}"
+
+    - name: Combine IP and Port Pairs
+      set_fact:
+        combined_destinations: "{{ destinations_list | zip(ports_list) | list }}"
+
+    - name: Execute PowerShell command
+      win_shell: |
+        $ErrorActionPreference = "Stop"
+        $results = @()
+        {% for item in combined_destinations %}
+        $item_ip = "{{ item.0 }}"
+        $item_port = "{{ item.1 }}"
+        if ("{{ protocol }}" -eq "tcp") {
+          $result = Test-NetConnection -ComputerName $item_ip -Port $item_port
+          $status = if ($result.TcpTestSucceeded) { "success" } else { "fail" }
+        } else {
+          $result = Test-NetUDPPort -ComputerName $item_ip -Port $item_port
+          $status = if ($result.UdpTestSucceeded) { "success" } else { "fail" }
+        }
+        $output = "{0} {1} {2}" -f $item_ip, $item_port, $status
+        $results += $output
+        {% endfor %}
+        $results
+      register: con
+
+    - debug:
+        var: item.stdout_lines
+      loop: "{{ con.results }}"
