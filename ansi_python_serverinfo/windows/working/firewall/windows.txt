@@ -1,9 +1,9 @@
-- name: test firewall on Windows
+- name: Test Network Connectivity
   hosts: "{{ servers }}"
   vars:
-    destinations: ""  # Provide the string of IP addresses
-    ports: ""         # Provide the string of ports
-    protocol: ""      # The protocol variable from Ansible Tower
+    destinations: ""  # Dynamic destination IPs string from Ansible Tower
+    ports: ""         # Dynamic ports string from Ansible Tower
+    protocol: ""      # Dynamic protocol from Ansible Tower
 
   tasks:
     - name: Split IP and Port Strings
@@ -18,18 +18,18 @@
       register: combined_results
 
     - name: Execute PowerShell command
-      script: |
+      win_shell: |
         $ErrorActionPreference = "Stop"
         $results = @()
         foreach ($item in $using:combined_results.results) {
           if ("{{ protocol }}" -eq "tcp") {
-            $result = Test-NetConnection -ComputerName $item.item.ip -Port $item.item.port
+            $result = Test-NetConnection -ComputerName $item.ip -Port $item.port
             $status = if ($result.TcpTestSucceeded) { "success" } else { "fail" }
           } else {
-            $result = Test-NetUDPPort -ComputerName $item.item.ip -Port $item.item.port
+            $result = Test-NetUDPPort -ComputerName $item.ip -Port $item.port
             $status = if ($result.UdpTestSucceeded) { "success" } else { "fail" }
           }
-          $output = "{0} {1} {2}" -f $item.item.ip, $item.item.port, $status
+          $output = "{0} {1} {2}" -f $item.ip, $item.port, $status
           $results += $output
         }
         $results
