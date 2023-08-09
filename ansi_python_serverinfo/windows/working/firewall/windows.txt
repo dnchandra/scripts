@@ -3,7 +3,6 @@
   vars:
     destinations: []
     ports: []
-    protocol: "tcp"  # Change to "udp" if needed
 
   tasks:
     - name: Combine IP and Port Pairs
