@@ -13,7 +13,7 @@
 
     - name: Combine IP and Port Pairs
       set_fact:
-        combined_destinations: "{{ combined_destinations | default([]) + [{'ip': item[0], 'port': item[1]}] }}"
+        combined_destinations: "{{ combined_destinations | default([]) + [{'ip': item.0, 'port': item.1}] }}"
       loop: "{{ destinations_list | zip(ports_list) | list }}"
       register: combined_results
 
@@ -21,7 +21,7 @@
       win_shell: |
         $ErrorActionPreference = "Stop"
         $results = @()
-        foreach ($item in $using:combined_results.results) {
+        foreach ($item in $combined_results.results) {
           if ("{{ protocol }}" -eq "tcp") {
             $result = Test-NetConnection -ComputerName $item.item.ip -Port $item.item.port
             $status = if ($result.TcpTestSucceeded) { "success" } else { "fail" }
@@ -33,7 +33,6 @@
           $results += $output
         }
         $results
-      loop: "{{ combined_results.results }}"
       register: con
 
     - debug:
