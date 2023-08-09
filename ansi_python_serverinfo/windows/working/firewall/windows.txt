@@ -21,7 +21,7 @@
       win_shell: |
         $ErrorActionPreference = "Stop"
         $results = @()
-        foreach ($item in $using:combined_results.results) 
+        foreach ($item in $using:combined_results.results) {
           if ("{{ protocol }}" -eq "tcp") {
             $result = Test-NetConnection -ComputerName $item.ip -Port $item.port
             $status = if ($result.TcpTestSucceeded) { "success" } else { "fail" }
