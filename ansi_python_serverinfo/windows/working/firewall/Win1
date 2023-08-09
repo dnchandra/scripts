@@ -18,23 +18,21 @@
     - name: Execute PowerShell command
       win_shell: |
         $ErrorActionPreference = "Stop"
-        $results = @()
-        {% for item in combined_destinations %}
-        $item_ip = "{{ item.0 }}"
-        $item_port = "{{ item.1 }}"
-        if ("{{ protocol }}" -eq "tcp") {
-          $result = Test-NetConnection -ComputerName $item_ip -Port $item_port
-          $status = if ($result.TcpTestSucceeded) { "success" } else { "fail" }
-        } else {
-          $result = Test-NetUDPPort -ComputerName $item_ip -Port $item_port
-          $status = if ($result.UdpTestSucceeded) { "success" } else { "fail" }
+        $output = @()
+        foreach ($item in $env:combined_destinations) {
+          $item_ip = $item[0]
+          $item_port = $item[1]
+          if ("{{ protocol }}" -eq "tcp") {
+            $result = Test-NetConnection -ComputerName $item_ip -Port $item_port
+            $status = if ($result.TcpTestSucceeded) { "success" } else { "fail" }
+          } else {
+            $result = Test-NetUDPPort -ComputerName $item_ip -Port $item_port
+            $status = if ($result.UdpTestSucceeded) { "success" } else { "fail" }
+          }
+          $output += "$item_ip $item_port $status"
         }
-        $output = "{0} {1} {2}" -f $item_ip, $item_port, $status
-        $results += $output
-        {% endfor %}
-        $results
+        $output
       register: con
 
     - debug:
-        var: item.stdout_lines
-      loop: "{{ con.results }}"
+        var: con.stdout_lines
