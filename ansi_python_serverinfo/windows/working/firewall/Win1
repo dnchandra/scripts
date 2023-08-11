@@ -5,10 +5,12 @@
       win_shell: |
         $ErrorActionPreference = "Stop"
         $destinations_list = "{{ destinations.split(',') | map('trim') | list }}"
-        $ports_list = "{{ ports.split(',') | map('trim') | list }}"
+        $ports_list = "{{ ports }}"
         $protocol = "{{ protocol }}"
         foreach ($item_ip in $destinations_list) {
-          foreach ($item_port in $ports_list) {
+          $ports_array = $ports_list -split ","
+          foreach ($item_port in $ports_array) {
+            $item_port = $item_port.Trim()
             if ($protocol -eq "tcp") {
               Test-NetConnection -ComputerName $item_ip -Port $item_port
             } else {
