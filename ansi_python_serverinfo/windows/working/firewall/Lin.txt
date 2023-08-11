@@ -1,0 +1,40 @@
+---
+- name: Check Network Connections
+  hosts: "{{ servers }}"
+  gather_facts: false
+
+  vars:
+    DestinationIPs: "{{ destination_ips }}"
+    Ports: "{{ ports }}"
+    Protocol: "{{ protocol }}"
+
+  tasks:
+    - name: Check Network Connections
+      become: yes
+      become_user: root
+      shell: |
+        for ip in $(echo '{{ DestinationIPs }}' | tr ',' ' '); do
+            for port in $(echo '{{ Ports }}' | tr ',' ' '); do
+                if [ "{{ Protocol }}" == "tcp" ]; then
+                    if curl -m 3 -I telnet://$ip:$port 2>/dev/null | grep -q Connected; then
+                        echo "TCP connection to $ip on port $port successful."
+                    else
+                        echo "TCP connection to $ip on port $port failed."
+                    fi
+                elif [ "{{ Protocol }}" == "udp" ]; then
+                    if curl -m 3 -I telnet://$ip:$port/udp 2>/dev/null | grep -q Connected; then
+                        echo "UDP connection to $ip on port $port successful."
+                    else
+                        echo "UDP connection to $ip on port $port failed."
+                    fi
+                else
+                    echo "Invalid protocol specified for $ip:$port."
+                fi
+            done
+        done
+      register: network_results
+      changed_when: false
+
+    - name: Display Network Results
+      debug:
+        var: network_results.stdout_lines
