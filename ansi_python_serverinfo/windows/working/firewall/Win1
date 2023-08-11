@@ -1,37 +1,51 @@
 ---
-- name: Test Network Connectivity
+- name: Check Network Connections
   hosts: "{{ servers }}"
+  gather_facts: false
+
+  vars:
+    DestinationIPs: "{{ destination_ips }}"
+    Ports: "{{ ports }}"
+    Protocol: "{{ protocol }}"
+
   tasks:
-    - name: Display Input Variables
-      debug:
-        msg: "Destinations: {{ destinations }}, Ports: {{ ports }}, Protocol: {{ protocol }}"
-
-    - name: Execute PowerShell command
+    - name: Run PowerShell script on remote host
       win_shell: |
-        $ErrorActionPreference = "Stop"
-        $destinations_list = "{{ destinations }}"
-        $destinations_array = $destinations_list -split "[ ,]+"
-        $ports_list = "{{ ports }}"
-        $protocol = "{{ protocol }}"
-        $ports_array = $ports_list -split "[ ,]+"
-        $results = @()
-        foreach ($item_ip in $destinations_array) {
-          foreach ($item_port in $ports_array) {
-            if ($protocol -eq "tcp") {
-              $result = Test-NetConnection -ComputerName $item_ip -Port $item_port
-            } else {
-              $result = Test-NetUDPPort -ComputerName $item_ip -Port $item_port
+        $IPArray = ("{{ DestinationIPs }}" -replace '\s', '') -split ","
+        $PortArray = ("{{ Ports }}" -replace '\s', '') -split ","
+        
+        try {
+            foreach ($IP in $IPArray) {
+                foreach ($Port in $PortArray) {
+                    try {
+                        if ("{{ Protocol }}" -eq "tcp") {
+                            $tcpClient = New-Object System.Net.Sockets.TcpClient
+                            $tcpClient.Connect($IP, $Port)
+                            
+                            if ($tcpClient.Connected) {
+                                Write-Host "TCP connection to $IP on port $Port successful."
+                            } else {
+                                Write-Host "TCP connection to $IP on port $Port failed."
+                            }
+                            
+                            $tcpClient.Close()
+                        } elseif ("{{ Protocol }}" -eq "udp") {
+                            $udpClient = New-Object System.Net.Sockets.UdpClient
+                            $udpClient.Connect($IP, $Port)
+                            
+                            Write-Host "UDP connection to $IP on port $Port successful."
+                            
+                            $udpClient.Close()
+                        } else {
+                            Write-Host "Invalid protocol specified. Please use 'tcp' or 'udp'."
+                        }
+                    } catch {
+                        Write-Host "An error occurred for $IP:$Port - $_"
+                    }
+                }
             }
-            $results += @{
-              Destination = $item_ip
-              Port = $item_port
-              PingSucceeded = $result.PingSucceeded
-            }
-          }
+        } catch {
+            Write-Host "An error occurred: $_"
         }
-        $results | ConvertTo-Json
-      register: con
-
-    - name: Display Script Output
-      debug:
-        var: con.stdout
+      args:
+        executable: powershell.exe
