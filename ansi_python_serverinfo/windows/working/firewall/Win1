@@ -34,4 +34,3 @@
     - name: Display Script Output
       debug:
         var: con.stdout
-
