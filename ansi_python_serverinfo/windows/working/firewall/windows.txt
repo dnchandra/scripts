@@ -9,8 +9,8 @@
     Protocol: "{{ protocol }}"
 
   tasks:
-    - name: Check Network Connections
-      script: |
+    - name: Run PowerShell script on remote host
+      win_shell: |
         $IPArray = "{{ DestinationIPs }}" -split ","
         $PortArray = "{{ Ports }}" -split ","
         
@@ -41,5 +41,3 @@
                 }
             }
         }
-      args:
-        executable: powershell.exe
