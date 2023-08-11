@@ -9,7 +9,7 @@
     - name: Execute PowerShell command
       win_shell: |
         $ErrorActionPreference = "Stop"
-        $destinations_list = "{{ destinations.split('[ ,]+') | map('trim') | list }}"
+        $destinations_list = {{ destinations.split('[ ,]+') | map('trim') | list | to_json }}
         $ports_list = "{{ ports }}"
         $protocol = "{{ protocol }}"
         $ports_array = $ports_list -split "[ ,]+"
