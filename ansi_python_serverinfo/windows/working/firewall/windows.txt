@@ -11,20 +11,20 @@
   tasks:
     - name: Run PowerShell script on remote host
       win_shell: |
-        $IPArray = "{{ DestinationIPs }}" -split ","
-        $PortArray = "{{ Ports }}" -split ","
+        $IPArray = '{{ DestinationIPs }}' -split ","
+        $PortArray = '{{ Ports }}' -split ","
         
         foreach ($IP in $IPArray) {
             foreach ($Port in $PortArray) {
                 try {
-                    if ("{{ Protocol }}" -eq "tcp") {
+                    if ('{{ Protocol }}' -eq 'tcp') {
                         $connection = Test-Connection -ComputerName $IP -Count 1 -ErrorAction Stop
                         if ($connection.StatusCode -eq 0) {
                             Write-Host "TCP connection to $IP on port $Port successful."
                         } else {
                             Write-Host "TCP connection to $IP on port $Port failed."
                         }
-                    } elseif ("{{ Protocol }}" -eq "udp") {
+                    } elseif ('{{ Protocol }}' -eq 'udp') {
                         $result = Test-NetConnection -ComputerName $IP -Udp -Port $Port
                         if ($result.UDPTestSucceeded) {
                             Write-Host "UDP connection to $IP on port $Port successful."
