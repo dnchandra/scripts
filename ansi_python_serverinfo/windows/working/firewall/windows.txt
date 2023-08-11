@@ -18,17 +18,15 @@
             foreach ($Port in $PortArray) {
                 try {
                     if ("{{ Protocol }}" -eq "tcp") {
-                        $result = Test-NetConnection -ComputerName $IP -Port $Port
-                        if ($result.TcpTestSucceeded) {
+                        $connection = Test-Connection -ComputerName $IP -Count 1 -ErrorAction Stop
+                        if ($connection.StatusCode -eq 0) {
                             Write-Host "TCP connection to $IP on port $Port successful."
                         } else {
                             Write-Host "TCP connection to $IP on port $Port failed."
                         }
                     } elseif ("{{ Protocol }}" -eq "udp") {
-                        # UDP checks are a bit more complex, as there's no direct cmdlet like Test-NetConnection
-                        $url = "udp://$IP:$Port"
-                        $response = Invoke-WebRequest -Uri $url -Method Get
-                        if ($response.StatusCode -eq 200) {
+                        $result = Test-NetConnection -ComputerName $IP -Udp -Port $Port
+                        if ($result.UDPTestSucceeded) {
                             Write-Host "UDP connection to $IP on port $Port successful."
                         } else {
                             Write-Host "UDP connection to $IP on port $Port failed."
