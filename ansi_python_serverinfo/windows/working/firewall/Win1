@@ -2,20 +2,36 @@
 - name: Test Network Connectivity
   hosts: "{{ servers }}"
   tasks:
+    - name: Display Input Variables
+      debug:
+        msg: "Destinations: {{ destinations }}, Ports: {{ ports }}, Protocol: {{ protocol }}"
+
     - name: Execute PowerShell command
       win_shell: |
         $ErrorActionPreference = "Stop"
         $destinations_list = "{{ destinations.split(',') | map('trim') | list }}"
-        $ports_list = "{{ ports.split(',') | map('trim') | list }}"
+        $ports_list = "{{ ports }}"
         $protocol = "{{ protocol }}"
+        $ports_array = $ports_list -split "[ ,]+"
+        $results = @()
         foreach ($item_ip in $destinations_list) {
-          foreach ($item_port in $ports_list) {
+          foreach ($item_port in $ports_array) {
             if ($protocol -eq "tcp") {
-              $connectionResult = Test-NetConnection -ComputerName $item_ip -Port $item_port
+              $result = Test-NetConnection -ComputerName $item_ip -Port $item_port
             } else {
-              $connectionResult = Test-NetUDPPort -ComputerName $item_ip -Port $item_port
+              $result = Test-NetUDPPort -ComputerName $item_ip -Port $item_port
             }
-            Write-Host "Destination: $item_ip, Port: $item_port, Result: $($connectionResult.PingSucceeded)"
+            $results += @{
+              Destination = $item_ip
+              Port = $item_port
+              PingSucceeded = $result.PingSucceeded
+            }
           }
         }
+        $results | ConvertTo-Json
       register: con
+
+    - name: Display Script Output
+      debug:
+        var: con.stdout
+
