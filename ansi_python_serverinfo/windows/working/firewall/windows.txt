@@ -1,39 +1,45 @@
-- name: Test Network Connectivity
+---
+- name: Check Network Connections
   hosts: "{{ servers }}"
+  gather_facts: false
+
   vars:
-    destinations: ""  # Dynamic destination IPs string from Ansible Tower
-    ports: ""         # Dynamic ports string from Ansible Tower
-    protocol: ""      # Dynamic protocol from Ansible Tower
+    DestinationIPs: "{{ destination_ips }}"
+    Ports: "{{ ports }}"
+    Protocol: "{{ protocol }}"
 
   tasks:
-    - name: Split IP and Port Strings
-      set_fact:
-        destinations_list: "{{ destinations.split(',') | map('trim') | list }}"
-        ports_list: "{{ ports.split(',') | map('trim') | list }}"
-
-    - name: Combine IP and Port Pairs
-      set_fact:
-        combined_destinations: "{{ destinations_list | zip(ports_list) | list }}"
-      register: combined_results
-
-    - name: Execute PowerShell command
-      win_shell: |
-        $ErrorActionPreference = "Stop"
-        $results = @()
-        foreach ($item in {{ combined_results.var }}) {
-          if ("{{ protocol }}" -eq "tcp") {
-            $result = Test-NetConnection -ComputerName $item.0 -Port $item.1
-            $status = if ($result.TcpTestSucceeded) { "success" } else { "fail" }
-          } else {
-            $result = Test-NetUDPPort -ComputerName $item.0 -Port $item.1
-            $status = if ($result.UdpTestSucceeded) { "success" } else { "fail" }
-          }
-          $output = "{0} {1} {2}" -f $item.0, $item.1, $status
-          $results += $output
+    - name: Check Network Connections
+      script: |
+        $IPArray = "{{ DestinationIPs }}" -split ","
+        $PortArray = "{{ Ports }}" -split ","
+        
+        foreach ($IP in $IPArray) {
+            foreach ($Port in $PortArray) {
+                try {
+                    if ("{{ Protocol }}" -eq "tcp") {
+                        $result = Test-NetConnection -ComputerName $IP -Port $Port
+                        if ($result.TcpTestSucceeded) {
+                            Write-Host "TCP connection to $IP on port $Port successful."
+                        } else {
+                            Write-Host "TCP connection to $IP on port $Port failed."
+                        }
+                    } elseif ("{{ Protocol }}" -eq "udp") {
+                        # UDP checks are a bit more complex, as there's no direct cmdlet like Test-NetConnection
+                        $url = "udp://$IP:$Port"
+                        $response = Invoke-WebRequest -Uri $url -Method Get
+                        if ($response.StatusCode -eq 200) {
+                            Write-Host "UDP connection to $IP on port $Port successful."
+                        } else {
+                            Write-Host "UDP connection to $IP on port $Port failed."
+                        }
+                    } else {
+                        Write-Host "Invalid protocol specified. Please use 'tcp' or 'udp'."
+                    }
+                } catch {
+                    Write-Host "An error occurred for $IP:$Port - $_"
+                }
+            }
         }
-        $results
-      register: con
-
-    - debug:
-        var: item.stdout_lines
-      loop: "{{ con.results }}"
+      args:
+        executable: powershell.exe
