@@ -1,0 +1,42 @@
+---
+- name: Check Network Connections
+  hosts: "{{ servers }}"
+  gather_facts: false
+
+  vars:
+    DestinationIPs: "{{ destination_ips }}"
+    Ports: "{{ ports }}"
+    Protocol: "{{ protocol }}"
+
+  tasks:
+    - name: Run PowerShell script on remote host
+      win_shell: |
+        $IPArray = '{{ DestinationIPs }}' -split ","
+        $PortArray = '{{ Ports }}' -split ","
+        
+        $results = @()
+        
+        foreach ($IP in $IPArray) {
+            foreach ($Port in $PortArray) {
+                try {
+                    if ('{{ Protocol }}' -eq 'tcp') {
+                        $result = Test-NetConnection -ComputerName $IP -Port $Port -InformationLevel Quiet
+                        $results += "TCP connection to $IP on port $Port: $($result -as [bool])"
+                    } elseif ('{{ Protocol }}' -eq 'udp') {
+                        $result = Test-NetConnection -ComputerName $IP -Udp -Port $Port -InformationLevel Quiet
+                        $results += "UDP connection to $IP on port $Port: $($result -as [bool])"
+                    } else {
+                        $results += "Invalid protocol specified for $IP:$Port."
+                    }
+                } catch {
+                    $results += "An error occurred for $IP:$Port - $($_.Exception.Message)"
+                }
+            }
+        }
+        
+        $results
+      register: network_results
+
+    - name: Display Network Results
+      debug:
+        var: network_results.stdout_lines
