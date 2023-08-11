@@ -35,7 +35,8 @@
                         Write-Host "Invalid protocol specified. Please use 'tcp' or 'udp'."
                     }
                 } catch {
-                    Write-Host "An error occurred for $IP:$Port - $_"
+                    $errorMessage = "An error occurred for $IP:$Port - $($_.Exception.Message)"
+                    Write-Output $errorMessage
                 }
             }
         }
