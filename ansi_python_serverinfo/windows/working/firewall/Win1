@@ -9,12 +9,13 @@
     - name: Execute PowerShell command
       win_shell: |
         $ErrorActionPreference = "Stop"
-        $destinations_list = {{ destinations.split('[ ,]+') | map('trim') | list | to_json }}
+        $destinations_list = "{{ destinations }}"
+        $destinations_array = $destinations_list -split "[ ,]+"
         $ports_list = "{{ ports }}"
         $protocol = "{{ protocol }}"
         $ports_array = $ports_list -split "[ ,]+"
         $results = @()
-        foreach ($item_ip in $destinations_list) {
+        foreach ($item_ip in $destinations_array) {
           foreach ($item_port in $ports_array) {
             if ($protocol -eq "tcp") {
               $result = Test-NetConnection -ComputerName $item_ip -Port $item_port
