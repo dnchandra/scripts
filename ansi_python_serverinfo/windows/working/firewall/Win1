@@ -10,42 +10,38 @@
 
   tasks:
     - name: Run PowerShell script on remote host
-      win_shell: |
-        $IPArray = ("{{ DestinationIPs }}" -replace '\s', '') -split ","
-        $PortArray = ("{{ Ports }}" -replace '\s', '') -split ","
+      script: |
+        $IPArray = "{{ DestinationIPs }}" -split ","
+        $PortArray = "{{ Ports }}" -split ","
         
-        try {
-            foreach ($IP in $IPArray) {
-                foreach ($Port in $PortArray) {
-                    try {
-                        if ("{{ Protocol }}" -eq "tcp") {
-                            $tcpClient = New-Object System.Net.Sockets.TcpClient
-                            $tcpClient.Connect($IP, $Port)
-                            
-                            if ($tcpClient.Connected) {
-                                Write-Host "TCP connection to $IP on port $Port successful."
-                            } else {
-                                Write-Host "TCP connection to $IP on port $Port failed."
-                            }
-                            
-                            $tcpClient.Close()
-                        } elseif ("{{ Protocol }}" -eq "udp") {
-                            $udpClient = New-Object System.Net.Sockets.UdpClient
-                            $udpClient.Connect($IP, $Port)
-                            
-                            Write-Host "UDP connection to $IP on port $Port successful."
-                            
-                            $udpClient.Close()
+        foreach ($IP in $IPArray) {
+            foreach ($Port in $PortArray) {
+                try {
+                    if ("{{ Protocol }}" -eq "tcp") {
+                        $tcpClient = New-Object System.Net.Sockets.TcpClient
+                        $tcpClient.Connect($IP, $Port)
+                        
+                        if ($tcpClient.Connected) {
+                            Write-Host "TCP connection to $IP on port $Port successful."
                         } else {
-                            Write-Host "Invalid protocol specified. Please use 'tcp' or 'udp'."
+                            Write-Host "TCP connection to $IP on port $Port failed."
                         }
-                    } catch {
-                        Write-Host "An error occurred for $IP:$Port - $_"
+                        
+                        $tcpClient.Close()
+                    } elseif ("{{ Protocol }}" -eq "udp") {
+                        $udpClient = New-Object System.Net.Sockets.UdpClient
+                        $udpClient.Connect($IP, $Port)
+                        
+                        Write-Host "UDP connection to $IP on port $Port successful."
+                        
+                        $udpClient.Close()
+                    } else {
+                        Write-Host "Invalid protocol specified. Please use 'tcp' or 'udp'."
                     }
+                } catch {
+                    Write-Host "An error occurred for $IP:$Port - $_"
                 }
             }
-        } catch {
-            Write-Host "An error occurred: $_"
         }
       args:
         executable: powershell.exe
