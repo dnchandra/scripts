@@ -1,3 +1,4 @@
+---
 - name: Test Network Connectivity
   hosts: "{{ servers }}"
   tasks:
@@ -5,12 +6,10 @@
       win_shell: |
         $ErrorActionPreference = "Stop"
         $destinations_list = "{{ destinations.split(',') | map('trim') | list }}"
-        $ports_list = "{{ ports }}"
+        $ports_array = "{{ ports.split(',') | map('trim') | list }}"
         $protocol = "{{ protocol }}"
         foreach ($item_ip in $destinations_list) {
-          $ports_array = $ports_list -split ","
           foreach ($item_port in $ports_array) {
-            $item_port = $item_port.Trim()
             if ($protocol -eq "tcp") {
               Test-NetConnection -ComputerName $item_ip -Port $item_port
             } else {
@@ -19,3 +18,4 @@
           }
         }
       register: con
+
