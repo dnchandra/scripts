@@ -47,7 +47,7 @@ def highlight_changed_values(html_file):
                 cell['style'] = 'color: red;text-align: center;'
 
     # Write the modified HTML to a new file
-    new_html_file = 'final1.html'
+    new_html_file = 'final.html'
     with open(new_html_file, 'w') as f:
         f.write(str(soup))
 
