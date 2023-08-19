@@ -1,0 +1,44 @@
+---
+- name: Check Network Connectivity
+  hosts: "{{ servers }}"
+  gather_facts: false
+
+  vars:
+    DestinationIPs: "{{ destination_ips }}"
+    Ports: "{{ ports }}"
+    Protocol: "{{ protocol }}"
+
+  tasks:
+    - name: Check Firewall Connections
+      shell: |
+        for ip in $(echo '{{ DestinationIPs }}' | tr ',' ' '); do
+            for port in $(echo '{{ Ports }}' | tr ',' ' '); do
+                if [ "{{ Protocol }}" == "tcp" ]; then
+                    result=$(curl -m 3 -I telnet://$ip:$port 2>&1)
+                    if echo "$result" | grep -q "Connected"; then
+                        echo "TCP connection to $ip on port $port successful."
+                    elif echo "$result" | grep -q "Connection refused"; then
+                        echo "TCP connection to $ip on port $port refused."
+                    else
+                        echo "TCP connection to $ip on port $port failed."
+                    fi
+                elif [ "{{ Protocol }}" == "udp" ]; then
+                    result=$(curl -m 3 -I telnet://$ip:$port/udp 2>&1)
+                    if echo "$result" | grep -q "Connected"; then
+                        echo "UDP connection to $ip on port $port successful."
+                    elif echo "$result" | grep -q "Connection refused"; then
+                        echo "UDP connection to $ip on port $port refused."
+                    else
+                        echo "UDP connection to $ip on port $port failed."
+                    fi
+                else
+                    echo "Invalid protocol specified for $ip:$port."
+                fi
+            done
+        done
+      register: firewall_results
+      changed_when: false
+
+    - name: Display Firewall Results
+      debug:
+        var: firewall_results.stdout_lines
