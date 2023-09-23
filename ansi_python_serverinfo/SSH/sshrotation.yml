@@ -1,0 +1,50 @@
+---
+- name: Create SSH Keys, Backup Existing Files, and Copy to Destination Servers
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Set ansible_user to student
+      set_fact:
+        ansible_user: student
+
+    - name: Create SSH keys folder if it doesn't exist
+      file:
+        path: /home/{{ ansible_user }}/sshkeys
+        state: directory
+      tags: create_sshkeys_folder
+
+    - name: Backup existing files in SSH keys folder
+      shell: >
+        find /home/{{ ansible_user }}/sshkeys
+        -maxdepth 1
+        -type f
+        -not -name "*.bak" -exec sh -c 'mv {} {}-$(date +%Y%m%d%H%M%S).bak' \;
+      ignore_errors: yes
+      changed_when: false
+      tags: backup_existing_files
+
+    - name: Generate SSH keys
+      ansible.builtin.openssh_keypair:
+        path: /home/{{ ansible_user }}/sshkeys/id_rsa
+        size: 4096
+      tags: generate_ssh_keys
+
+    - name: Rename authorized_keys to create backup
+      command: >
+        sh -c 'mv /home/{{ ansible_user }}/.ssh/authorized_keys /home/{{ ansible_user }}/.ssh/authorized_keys-$(date +%Y%m%d%H%M%S).bak'
+      delegate_to: "{{ item }}"
+      with_inventory_hostnames:
+        - "{{ ansible_inventory_hostname }}"  # Retrieve group dynamically
+      tags: rename_authorized_keys
+
+    - name: Copy SSH key to destination servers
+      ansible.builtin.copy:
+        src: /home/{{ ansible_user }}/sshkeys/id_rsa.pub
+        dest: /home/{{ ansible_user }}/.ssh/authorized_keys
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+      delegate_to: "{{ item }}"
+      with_inventory_hostnames:
+        - "{{ ansible_inventory_hostname }}"  # Retrieve group dynamically
+      tags: copy_ssh_key
