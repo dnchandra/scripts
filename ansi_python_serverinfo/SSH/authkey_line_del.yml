@@ -1,0 +1,36 @@
+---
+- name: Update authorized_keys file
+  hosts: servera
+  become: yes
+  become_user: student  # Replace with the actual SSH user
+  tasks:
+    - name: Read the current authorized_keys file
+      shell: cat /home/student/.ssh/authorized_keys
+      register: current_authorized_keys
+      check_mode: no
+
+    - name: Create updated authorized_keys content
+      set_fact:
+        updated_authorized_keys: |
+          {% for line in current_authorized_keys.stdout_lines %}
+          {% if line.startswith('ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDGtUW3is') %}
+          {{ line }}
+          {% elif line.startswith('#') %}
+          {{ line }}
+          {% else %}
+          # {{ line }}
+          {% endif %}
+          {% endfor %}
+
+    - name: Update authorized_keys file
+      copy:
+        content: "{{ updated_authorized_keys }}"
+        dest: /home/student/.ssh/authorized_keys
+      check_mode: no
+
+    - name: Delete lines not starting with ssh-rsa
+      replace:
+        path: /home/student/.ssh/authorized_keys
+        regexp: '^(?!ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDGtUW3is).*\n?'
+        replace: ''
+      check_mode: no
