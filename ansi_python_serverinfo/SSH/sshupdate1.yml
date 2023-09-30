@@ -1,0 +1,77 @@
+---
+- name: Create SSH Keys, Backup Existing Files, and Generate SSH Key in sshkeys directory
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Set ansible_user to student
+      set_fact:
+        ansible_user: student
+
+    - name: Create SSH keys folder if it doesn't exist
+      file:
+        path: /home/{{ ansible_user }}/sshkeys
+        state: directory
+      tags: create_sshkeys_folder
+
+    - name: Backup existing files in SSH keys folder
+      shell: >
+        find /home/{{ ansible_user }}/sshkeys
+        -maxdepth 1
+        -type f
+        -not -name "*.bak" -exec sh -c 'mv {} {}-$(date +%Y%m%d%H%M%S).bak' \;
+      ignore_errors: yes
+      changed_when: false
+      tags: backup_existing_files
+
+    - name: Generate SSH key with 8192 bits
+      shell: ssh-keygen -t rsa -b 8192 -C "Generated on $(date +%Y%m%d%H%M)" -f /home/{{ ansible_user }}/sshkeys/id_rsa -N ""
+      tags: generate_ssh_key_8192_bits
+
+- name: Update SSH keys on destination servers
+  hosts: servera
+  tasks:
+    - name: Set ansible_user to student
+      set_fact:
+        ansible_user: student
+
+    - name: Check if authorized_keys file exists
+      stat:
+        path: /home/{{ ansible_user }}/.ssh/authorized_keys
+      register: authorized_keys_stat
+      tags: check_authorized_keys_existence
+
+    - name: Rename authorized_keys to create a backup
+      command: >
+        cp /home/{{ ansible_user }}/.ssh/authorized_keys /home/{{ ansible_user }}/.ssh/authorized_keys-{{ ansible_date_time.date }}-{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}{{ ansible_date_time.second }}.bak
+      when: authorized_keys_stat.stat.exists
+      tags: rename_authorized_keys
+
+    - name: Read the content of the authorized_file
+      slurp:
+        src: /home/{{ ansible_user }}/.ssh/authorized_keys
+      register: file_content
+
+    - name: Process the content and add "#" as needed
+      set_fact:
+        modified_lines: []
+
+    - name: Iterate through the lines
+      set_fact:
+        modified_lines: "{{ modified_lines + [item] }}"
+      with_lines: "{{ file_content.content | b64decode | split('\n') }}"
+      when: not item.stdout.startswith('ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDGtUW3')
+
+    - name: Add "#" to the lines that don't start with the specific string
+      lineinfile:
+        path: /home/{{ ansible_user }}/.ssh/authorized_keys
+        line: "# {{ item }}"
+        insertafter: EOF
+      loop: "{{ modified_lines }}"
+      when: modified_lines | length > 0
+
+    - name: Append SSH key to authorized_keys
+      lineinfile:
+        path: /home/{{ ansible_user }}/.ssh/authorized_keys
+        line: "{{ lookup('file', '/home/{{ ansible_user }}/sshkeys/id_rsa.pub') }}"
+        create: yes
+      tags: append_ssh_key
