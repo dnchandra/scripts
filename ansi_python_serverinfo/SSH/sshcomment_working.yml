@@ -1,0 +1,16 @@
+---
+- name: Comment lines in authorized_keys file
+  hosts: servera
+  vars:
+    regex_patterns:
+      - '^(ssh-rsa AAA.*)$'
+      - '^(ssh-rsa AAA.*)$'  # Replace with your desired regex
+
+  tasks:
+    - name: Comment lines matching regular expressions
+      loop: "{{ regex_patterns }}"
+      replace:
+        path: /home/student/.ssh/authorized_keys
+        regexp: "{{ item }}"
+        replace: '# \1'
+      register: line_changed
