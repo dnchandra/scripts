@@ -1,6 +1,6 @@
 ---
 - name: Delete lines in authorized_keys file
-  hosts: servera
+  hosts: "{{ target_servers }}"
   vars:
     regex_patterns:
       - '^(ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAEAQCXKackIs7jE.*)$'
