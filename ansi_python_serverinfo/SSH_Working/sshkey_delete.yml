@@ -1,0 +1,21 @@
+---
+- name: Delete lines in authorized_keys file
+  hosts: servera
+  vars:
+    regex_patterns:
+      - '^(ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAEAQCXKackIs7jE.*)$'
+      - '^(ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAEAQCqnImuZJQx9CLq1u.*)$'  # Replace with your desired regex
+
+  tasks:
+    - name: Delete lines matching regular expressions
+      loop: "{{ regex_patterns }}"
+      replace:
+        path: /home/student/.ssh/authorized_keys
+        regexp: "{{ item }}"
+        replace: ''
+      register: line_changed
+
+    - name: Store the count of modified or deleted lines
+      set_fact:
+        modified_or_deleted_lines: "{{ modified_or_deleted_lines|default(0) + item.changed }}"
+      loop: "{{ line_changed.results }}"
