@@ -12,6 +12,16 @@
         path: /home/{{ ansible_user }}/sshkeys
         state: directory
 
+    - name: Backup existing files in SSH keys folder
+      shell: >
+        find /home/{{ ansible_user }}/sshkeys
+        -maxdepth 1
+        -type f
+        -not -name "*.bak" -exec sh -c 'mv {} {}-$(date +%Y%m%d%H%M%S).bak' \;
+      ignore_errors: yes
+      changed_when: false
+      tags: backup_existing_files
+
     - name: Generate SSH key with 8192 bits
       shell: ssh-keygen -t rsa -b 8192 -C "Generated on $(date +%Y%m%d%H%M)" -f /home/{{ ansible_user }}/sshkeys/id_rsa -N ""
       tags: generate_ssh_key_8192_bits
