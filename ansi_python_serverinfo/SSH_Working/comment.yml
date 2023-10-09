@@ -1,0 +1,26 @@
+---
+- name: Comment lines in authorized_keys file
+  hosts: "{{ target_servers }}"  # Use the value of the target_servers variable
+  vars:
+    regex_patterns:
+      - '^(ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAEAQCXKackIs7jE.*)$'
+      - '^(ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAEAQCqnImuZJQx9CLq1u.*)$'  # Replace with your desired regex
+
+  tasks:
+    - name: Comment lines matching regular expressions
+      loop: "{{ regex_patterns }}"
+      replace:
+        path: /home/student/.ssh/authorized_keys
+        regexp: "{{ item }}"
+        replace: '# \1'
+      register: line_changed
+
+    - name: Store the count of modified or deleted lines
+      set_fact:
+        modified_or_deleted_lines: "{{ modified_or_deleted_lines|default(0) + item.changed }}"
+      loop: "{{ line_changed.results }}"
+      when: item.changed is defined
+
+    - name: Display the count of modified or deleted lines
+      debug:
+        var: modified_or_deleted_lines
