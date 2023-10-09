@@ -1,0 +1,28 @@
+---
+- name: Backup and Append SSH Key
+  hosts: "{{ target_servers }}"
+  gather_facts: true
+  tasks:
+    - name: Backup existing files in SSH keys folder
+      shell: >
+        find /home/{{ ansible_user }}/sshkeys
+        -maxdepth 1
+        -type f
+        -not -name "*.bak" -exec sh -c 'mv {} {}-$(date +%Y%m%d%H%M%S).bak' \;
+      ignore_errors: yes
+      changed_when: false
+      tags: backup_existing_files
+
+    - name: Rename authorized_keys to create backup
+      command: >
+        sh -c 'cp /home/{{ ansible_user }}/.ssh/authorized_keys /home/{{ ansible_user }}/.ssh/authorized_keys-$(date +%Y%m%d%H%M%S).bak'
+      delegate_to: "{{ inventory_hostname }}"
+      tags: rename_authorized_keys
+
+    - name: Append SSH key to authorized_keys on Destination Servers
+      ansible.builtin.lineinfile:
+        dest: /home/{{ ansible_user }}/.ssh/authorized_keys
+        line: "{{ lookup('file', '/home/{{ ansible_user }}/sshkeys/id_rsa.pub') }}"
+        create: yes
+        state: present
+      tags: copy_ssh_key
