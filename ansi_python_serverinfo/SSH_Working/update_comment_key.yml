@@ -1,0 +1,20 @@
+---
+- name: Update authorized_keys file
+  hosts: server
+  vars:
+    filepath: "/home/student/.ssh/authorized_keys"
+    appendline: "appending from AAP"
+    commentline: "Thislinewillbecommented"
+  tasks:
+    - name: Append a line to authorized_keys
+      lineinfile:
+        path: "/home/student/.ssh/authorized_keys"
+        line: "{{ appendline }}"
+        create: yes
+        state: present
+
+    - name: Comment a line in authorized_keys
+      replace:
+        path: "/home/student/.ssh/authorized_keys"
+        regexp: "^.*{{ commentline | regex_escape }}.*$"
+        replace: "# \\g<0>"
