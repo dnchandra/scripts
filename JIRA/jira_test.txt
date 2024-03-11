@@ -213,8 +213,8 @@ html_assignee_efforts += """
 """
 
 # Save HTML output to files
-with open('JIRA_output.html', 'w') as f:
+with open('JIRA_output.html', 'w', encoding='utf-8') as f:
     f.write(html_today + html_month_to_date + html_year_to_date)
 
-with open('efforts.html', 'w') as f:
+with open('efforts.html', 'w', encoding='utf-8') as f:
     f.write(html_assignee_efforts)
