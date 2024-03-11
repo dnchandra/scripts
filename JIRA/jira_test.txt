@@ -1,0 +1,220 @@
+from jira import JIRA
+from datetime import datetime, timedelta
+
+def get_work_logs(project_key, start_date, end_date):
+    options = {
+        'server': 'https://jirasever.local'
+    }
+    username = "username@domain.com"
+    api_token = "your_api_token"
+
+    jira = JIRA(options=options, basic_auth=(username, api_token))
+    
+    jql = f'project={project_key} AND worklogDate >= "{start_date}" AND worklogDate <= "{end_date}"'
+    
+    issues = jira.search_issues(jql, maxResults=1000, expand='changelog')
+    
+    work_logs = []
+    for issue in issues:
+        for worklog in issue.fields.worklog.worklogs:
+            work_logs.append({
+                'issue_key': issue.key,
+                'summary': issue.fields.summary,
+                'status': issue.fields.status.name,
+                'description': issue.fields.description,
+                'priority': issue.fields.priority.name,
+                'assignee': worklog.author.displayName,
+                'time_spent': worklog.timeSpent,
+                'created_date': issue.fields.created,
+                'due_date': issue.fields.duedate,
+                'last_updated': issue.fields.updated,
+                'resolved_date': getattr(issue.fields.resolutiondate, 'displayName', None),
+                'logged_user': worklog.author.displayName
+            })
+
+    return work_logs
+
+def generate_html_table(work_logs, title):
+    html_output = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+        }}
+        th, td {{
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }}
+        th {{
+            background-color: #f2f2f2;
+        }}
+    </style>
+</head>
+<body>
+    <h1>{title}</h1>
+    <table>
+        <tr>
+            <th>Issue Key</th>
+            <th>Summary</th>
+            <th>Status</th>
+            <th>Description</th>
+            <th>Priority</th>
+            <th>Assignee</th>
+            <th>Time Spent</th>
+            <th>Logged User</th>
+            <th>Created Date</th>
+            <th>Due Date</th>
+            <th>Last Updated</th>
+            <th>Resolved Date</th>
+        </tr>
+"""
+
+    for log in work_logs:
+        html_output += f"""
+        <tr>
+            <td>{log['issue_key']}</td>
+            <td>{log['summary']}</td>
+            <td>{log['status']}</td>
+            <td>{log['description']}</td>
+            <td>{log['priority']}</td>
+            <td>{log['assignee']}</td>
+            <td>{log['time_spent']}</td>
+            <td>{log['logged_user']}</td>
+            <td>{log['created_date']}</td>
+            <td>{log['due_date']}</td>
+            <td>{log['last_updated']}</td>
+            <td>{log['resolved_date']}</td>
+        </tr>
+"""
+
+    html_output += """
+    </table>
+</body>
+</html>
+"""
+    return html_output
+
+def calculate_cumulative_efforts(work_logs):
+    cumulative_efforts = {}
+    for log in work_logs:
+        logged_user = log['assignee']
+        time_spent = log['time_spent']
+        if logged_user in cumulative_efforts:
+            cumulative_efforts[logged_user] += time_spent
+        else:
+            cumulative_efforts[logged_user] = time_spent
+    return cumulative_efforts
+
+# Example usage
+project_key = "GTMS"
+today = datetime.now().date()
+month_to_date = today.replace(day=1)
+year_to_date = today.replace(month=1, day=1)
+
+# Fetch work logs for today, month to date, and year to date
+work_logs_today = get_work_logs(project_key, today, today)
+work_logs_month_to_date = get_work_logs(project_key, month_to_date, today)
+work_logs_year_to_date = get_work_logs(project_key, year_to_date, today)
+
+# Generate HTML for work logs
+html_today = generate_html_table(work_logs_today, "Work logs for today")
+html_month_to_date = generate_html_table(work_logs_month_to_date, "Work logs for month to date")
+html_year_to_date = generate_html_table(work_logs_year_to_date, "Work logs for year to date")
+
+# Calculate cumulative efforts for today, month to date, and year to date
+cumulative_efforts_today = calculate_cumulative_efforts(work_logs_today)
+cumulative_efforts_month_to_date = calculate_cumulative_efforts(work_logs_month_to_date)
+cumulative_efforts_year_to_date = calculate_cumulative_efforts(work_logs_year_to_date)
+
+# Generate HTML for cumulative efforts
+html_assignee_efforts = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        table {{
+            width: 50%;
+            border-collapse: collapse;
+        }}
+        th, td {{
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }}
+        th {{
+            background-color: #f2f2f2;
+        }}
+    </style>
+</head>
+<body>
+    <h1>Cumulative Efforts by Username</h1>
+    <h2>Today</h2>
+    <table>
+        <tr>
+            <th>Logged User</th>
+            <th>Efforts (hours)</th>
+        </tr>
+"""
+
+for user, efforts in cumulative_efforts_today.items():
+    html_assignee_efforts += f"""
+        <tr>
+            <td>{user}</td>
+            <td>{efforts}</td>
+        </tr>
+"""
+
+html_assignee_efforts += """
+    </table>
+    <br>
+    <h2>Month to Date</h2>
+    <table>
+        <tr>
+            <th>Logged User</th>
+            <th>Efforts (hours)</th>
+        </tr>
+"""
+
+for user, efforts in cumulative_efforts_month_to_date.items():
+    html_assignee_efforts += f"""
+        <tr>
+            <td>{user}</td>
+            <td>{efforts}</td>
+        </tr>
+"""
+
+html_assignee_efforts += """
+    </table>
+    <br>
+    <h2>Year to Date</h2>
+    <table>
+        <tr>
+            <th>Logged User</th>
+            <th>Efforts (hours)</th>
+        </tr>
+"""
+
+for user, efforts in cumulative_efforts_year_to_date.items():
+    html_assignee_efforts += f"""
+        <tr>
+            <td>{user}</td>
+            <td>{efforts}</td>
+        </tr>
+"""
+
+html_assignee_efforts += """
+    </table>
+</body>
+</html>
+"""
+
+# Save HTML output to files
+with open('JIRA_output.html', 'w') as f:
+    f.write(html_today + html_month_to_date + html_year_to_date)
+
+with open('efforts.html', 'w') as f:
+    f.write(html_assignee_efforts)
