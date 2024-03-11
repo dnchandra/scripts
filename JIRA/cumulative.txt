@@ -1,0 +1,30 @@
+def calculate_cumulative_efforts(work_logs):
+    cumulative_efforts = {}
+    for log in work_logs:
+        logged_user = log['assignee']
+        time_spent = log['time_spent']
+        time_spent_seconds = 0
+        
+        # Parse the time spent string into seconds
+        for part in time_spent.split():
+            if part.endswith('h'):
+                time_spent_seconds += int(part[:-1]) * 3600
+            elif part.endswith('d'):
+                time_spent_seconds += int(part[:-1]) * 86400
+            elif part.endswith('w'):
+                time_spent_seconds += int(part[:-1]) * 604800
+            elif part.endswith('m'):
+                time_spent_seconds += int(part[:-1]) * 60
+
+        if logged_user in cumulative_efforts:
+            cumulative_efforts[logged_user] += time_spent_seconds
+        else:
+            cumulative_efforts[logged_user] = time_spent_seconds
+
+    # Convert the total seconds back to formatted time
+    for user, total_seconds in cumulative_efforts.items():
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        cumulative_efforts[user] = f"{hours}h{minutes}m{seconds}s"
+
+    return cumulative_efforts
