@@ -1,0 +1,26 @@
+from jira import JIRA
+
+# Define your JIRA credentials and server URL
+options = {'server': 'https://jira.local'}
+username = 'username'
+api_token = 'api_token'
+
+
+# Initialize JIRA client
+jira = JIRA(options=options, basic_auth=(username, api_token))
+
+def get_field_ids(jira_key):
+    try:
+        # Get the JIRA project
+        project = jira.project(jira_key)
+
+        # Fetch and print the field IDs for the project
+        print(f"Field IDs for Project '{project.name}' ({project.key}):")
+        for field in jira.fields():
+            print(f"{field['id']}: {field['name']}")
+
+    except Exception as e:
+        print(f"Error fetching field IDs: {e}")
+
+# Replace 'YOUR_JIRA_KEY' with the actual JIRA project key
+get_field_ids('JIRA_KEY')
