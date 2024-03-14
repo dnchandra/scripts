@@ -1,0 +1,190 @@
+from flask import Flask, request, jsonify, render_template
+from jira import JIRA
+from datetime import datetime
+from tzlocal import get_localzone
+
+import logging
+
+app = Flask(__name__)
+
+# Define your JIRA credentials and server URL
+options = {'server': 'https://jira.local'}
+username = 'username'
+api_token = 'api_token'
+
+logging.basicConfig(level=logging.DEBUG)
+# Initialize JIRA client
+jira = JIRA(options=options, basic_auth=(username, api_token))
+
+def validate_jira_key(jira_key):
+    # Example validation logic (customize as needed)
+    if not jira_key or not jira_key.strip():
+        return False
+    return True
+
+def validate_date_range(start_date, end_date):
+    if not start_date or not end_date:
+        return False, 'Please enter both start and end dates.'
+
+    try:
+        start_date = datetime.strptime(start_date, '%Y-%m-%d')
+        end_date = datetime.strptime(end_date, '%Y-%m-%d')
+    except ValueError:
+        return False, 'Invalid date format. Please enter dates in YYYY-MM-DD format.'
+
+    if start_date > end_date:
+        return False, 'Start date should be before the end date.'
+
+    return True, None
+
+def get_work_logs(jira_keys, start_date, end_date):
+    work_logs = []
+    for jira_key in jira_keys:
+        jql = f'project={jira_key} AND created >= "{start_date}" AND created <= "{end_date}"'
+        issues = jira.search_issues(jql, maxResults=1000, expand='changelog')
+
+        for issue in issues:
+            work_logs.append({
+                'jira_key': jira_key,
+                'issue_key': issue.key,
+                'summary': issue.fields.summary,
+                'status': issue.fields.status.name,
+                'description': issue.fields.description,
+                'priority': issue.fields.priority.name,
+                'assignee': issue.fields.assignee.displayName if issue.fields.assignee else 'Unassigned',
+                'time_spent': issue.fields.timespent,
+                'created_date': issue.fields.created,
+                'due_date': issue.fields.duedate,
+                'last_updated': issue.fields.updated,
+                'resolved_date': issue.fields.resolutiondate,
+                'logged_user': issue.fields.reporter.displayName
+            })
+
+    return work_logs
+
+def generate_dashboard_data(work_logs):
+    dashboard_data = {}
+    for log in work_logs:
+        if log['jira_key'] not in dashboard_data:
+            dashboard_data[log['jira_key']] = []
+        dashboard_data[log['jira_key']].append({
+            'issue_key': log['issue_key'],
+            'summary': log['summary'],
+            'status': log['status'],
+            'description': log['description'],
+            'priority': log['priority'],
+            'assignee': log['assignee'],
+            'time_spent': log['time_spent'],
+            'created_date': log['created_date'],
+            'due_date': log['due_date'],
+            'last_updated': log['last_updated'],
+            'resolved_date': log['resolved_date'],
+            'logged_user': log['logged_user']
+        })
+    
+    return dashboard_data
+
+def serialize_custom_field_option(option):
+    # Serialize CustomFieldOption to a dictionary
+    return {
+        'id': option.id,
+        'value': option.value,
+        'self': option.self,
+        # Add other relevant fields as needed
+    }
+
+def get_management_dashboard_data(jira_keys):
+    status_count = {}
+    department_count = {}
+    category_count = {}
+    aged_tickets = {'30days': 0, '60days': 0, '90days': 0}
+
+    local_tz = get_localzone()
+
+    for jira_key in jira_keys:
+        issues = jira.search_issues(f'project={jira_key}', maxResults=1000)
+
+        for issue in issues:
+            status = issue.fields.status.name
+            status_count[status] = status_count.get(status, 0) + 1
+
+            department = issue.fields.customfield_10034  # Example custom field ID for department
+            if department is not None:
+                department_count[department.id] = department_count.get(department.id, 0) + 1
+
+            category = issue.fields.customfield_10035  # Example custom field ID for category
+            if category is not None:
+                category_count[category.id] = category_count.get(category.id, 0) + 1
+
+            created_date_str = issue.fields.created
+            created_date = datetime.strptime(created_date_str, '%Y-%m-%dT%H:%M:%S.%f%z')
+            created_date = created_date.astimezone(local_tz)
+            age_days = (datetime.now(local_tz) - created_date).days
+            if age_days >= 90:
+                aged_tickets['90days'] += 1
+            elif age_days >= 60:
+                aged_tickets['60days'] += 1
+            elif age_days >= 30:
+                aged_tickets['30days'] += 1
+
+    # Serialize custom field options to dictionaries
+    department_count_serialized = {key: value for key, value in department_count.items()}
+    category_count_serialized = {key: value for key, value in category_count.items()}
+
+    return {
+        'statusCount': [{'status': status, 'count': count} for status, count in status_count.items()],
+        'departmentCount': department_count_serialized,
+        'categoryCount': category_count_serialized,
+        'agedTickets': [{'ageRange': age_range, 'count': count} for age_range, count in aged_tickets.items()]
+    }
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/generate_dashboard', methods=['POST'])
+def generate_dashboard():
+    try:
+        jira_keys = request.form.get('jira_keys').split(',')
+        start_date = request.form.get('start_date')
+        end_date = request.form.get('end_date')
+
+        # Validate JIRA keys
+        for jira_key in jira_keys:
+            if not validate_jira_key(jira_key):
+                return jsonify({'error': 'Enter valid JIRA key or check with your JIRA admin'}), 400
+
+        # Validate date range
+        is_valid_date_range, date_range_error = validate_date_range(start_date, end_date)
+        if not is_valid_date_range:
+            return jsonify({'error': date_range_error}), 400
+
+        work_logs = get_work_logs(jira_keys, start_date, end_date)
+        dashboard_data = generate_dashboard_data(work_logs)
+
+        return jsonify(dashboard_data)
+
+    except Exception as e:
+        return jsonify({'error': 'An error occurred on the server. Please try again later.'}), 500
+
+@app.route('/management_dashboard', methods=['POST'])
+def management_dashboard():
+    try:
+        jira_keys = request.form.get('jira_keys').split(',')
+
+        # Validate JIRA keys
+        for jira_key in jira_keys:
+            if not validate_jira_key(jira_key):
+                return jsonify({'error': 'Enter valid JIRA key or check with your JIRA admin'}), 400
+
+        logging.debug(f'Received JIRA keys: {jira_keys}')
+
+        management_data = get_management_dashboard_data(jira_keys)
+        return jsonify(management_data)
+
+    except Exception as e:
+        logging.exception('An error occurred in the management_dashboard endpoint.')
+        return jsonify({'error': 'An error occurred on the server. Please try again later.'}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True)
