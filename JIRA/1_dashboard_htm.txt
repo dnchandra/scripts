@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JIRA Dashboard</title>
+  <style>
+    /* CSS for styling */
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f4f4f4;
+      margin: 0;
+      padding: 20px;
+    }
+
+    h1 {
+      margin-bottom: 20px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 20px;
+    }
+
+    th, td {
+      border: 1px solid #ccc;
+      padding: 8px;
+      text-align: left;
+    }
+  </style>
+</head>
+<body>
+  <h1>JIRA Dashboard</h1>
+  
+  <!-- Example structure for displaying dashboard data -->
+  <table>
+    <tr>
+      <th>JIRA Key</th>
+      <th>Issue Key</th>
+      <th>Summary</th>
+      <th>Status</th>
+      <th>Description</th>
+      <th>Priority</th>
+      <th>Assignee</th>
+      <th>Time Spent</th>
+      <th>Created Date</th>
+      <th>Due Date</th>
+      <th>Last Updated</th>
+      <th>Resolved Date</th>
+      <th>Logged User</th>
+    </tr>
+    {% for jira_key, issues in dashboard_data.items() %}
+      {% for issue in issues %}
+        <tr>
+          <td>{{ jira_key }}</td>
+          <td>{{ issue.issue_key }}</td>
+          <td>{{ issue.summary }}</td>
+          <td>{{ issue.status }}</td>
+          <td>{{ issue.description }}</td>
+          <td>{{ issue.priority }}</td>
+          <td>{{ issue.assignee }}</td>
+          <td>{{ issue.time_spent }}</td>
+          <td>{{ issue.created_date }}</td>
+          <td>{{ issue.due_date }}</td>
+          <td>{{ issue.last_updated }}</td>
+          <td>{{ issue.resolved_date }}</td>
+          <td>{{ issue.logged_user }}</td>
+        </tr>
+      {% endfor %}
+    {% endfor %}
+  </table>
+</body>
+</html>
