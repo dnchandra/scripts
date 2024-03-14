@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Custom JIRA Dashboard Generator</title>
+  <style>
+    /* CSS for styling */
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f4f4f4;
+      margin: 0;
+      padding: 20px;
+    }
+
+    .form-row {
+      display: flex;
+      align-items: center;
+    }
+
+    .form-group {
+      margin-right: 20px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    input[type="text"],
+    input[type="date"] {
+      width: 100%; /* Full width */
+      padding: 8px;
+      border-radius: 5px;
+      border: 1px solid #ccc;
+      margin-bottom: 10px;
+    }
+
+    .btn {
+      padding: 10px 20px;
+      background-color: #007bff;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      border-radius: 5px;
+      margin-left: 10px;
+    }
+
+    .btn:hover {
+      background-color: #0056b3;
+    }
+  </style>
+</head>
+<body>
+    <h1>Custom JIRA Dashboard Generator</h1>
+    <form id="dashboardForm">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="jiraKeys">JIRA Keys (Comma-separated):</label>
+          <input type="text" id="jiraKeys" name="jira_keys" placeholder="Enter JIRA keys">
+        </div>
+        <div class="form-group">
+          <label for="startDate">Start Date:</label>
+          <input type="date" id="startDate" name="start_date">
+        </div>
+        <div class="form-group">
+          <label for="endDate">End Date:</label>
+          <input type="date" id="endDate" name="end_date">
+        </div>
+        <button type="button" class="btn" id="generateDashboardBtn">Generate Dashboard</button>
+        <button type="button" class="btn" id="managementDashboardBtn">Management Dashboard</button>
+      </div>
+    </form>
+  
+    <div id="dashboardContainer"></div>
+  
+    <script>
+      document.getElementById('generateDashboardBtn').addEventListener('click', function() {
+        const jiraKeys = document.getElementById('jiraKeys').value.split(',');
+        const startDate = document.getElementById('startDate').value;
+        const endDate = document.getElementById('endDate').value;
+  
+        // Perform client-side validations
+        if (!jiraKeys.every(key => key.trim())) {
+          alert('Please enter valid JIRA keys.');
+          return;
+        }
+        if (!startDate || !endDate) {
+          alert('Please enter both start and end dates.');
+          return;
+        }
+        if (new Date(startDate) > new Date(endDate)) {
+          alert('Start date should be before the end date.');
+          return;
+        }
+  
+        const form = document.getElementById('dashboardForm');
+        const formData = new FormData(form);
+        const url = '/generate_dashboard';
+  
+        fetch(url, {
+          method: 'POST',
+          body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+          renderDashboard(data);
+        })
+        .catch(error => console.error('Error:', error));
+      });
+
+      document.getElementById('managementDashboardBtn').addEventListener('click', function() {
+        const jiraKeys = document.getElementById('jiraKeys').value.split(',');
+  
+        // Perform client-side validations
+        if (!jiraKeys.every(key => key.trim())) {
+          alert('Please enter valid JIRA keys.');
+          return;
+        }
+  
+        const url = '/management_dashboard';
+  
+        fetch(url, {
+          method: 'POST',
+          body: new URLSearchParams({ jira_keys: jiraKeys.join(',') })
+        })
+        .then(response => response.json())
+        .then(data => {
+          renderManagementDashboard(data);
+        })
+        .catch(error => console.error('Error:', error));
+      });
+
+      function renderDashboard(data) {
+        const dashboardContainer = document.getElementById('dashboardContainer');
+        dashboardContainer.innerHTML = `
+          <h2>JIRA Dashboard</h2>
+          ${Object.keys(data).map(key => `
+            <h3>${key}</h3>
+            <table border="1">
+              <tr>
+                <th>Issue Key</th>
+                <th>Summary</th>
+                <th>Status</th>
+                <th>Description</th>
+                <th>Priority</th>
+                <th>Assignee</th>
+                <th>Time Spent</th>
+                <th>Created Date</th>
+                <th>Due Date</th>
+                <th>Last Updated</th>
+                <th>Resolved Date</th>
+                <th>Logged User</th>
+              </tr>
+              ${data[key].map(item => `
+                <tr>
+                  <td>${item.issue_key}</td>
+                  <td>${item.summary}</td>
+                  <td>${item.status}</td>
+                  <td>${item.description}</td>
+                  <td>${item.priority}</td>
+                  <td>${item.assignee}</td>
+                  <td>${item.time_spent}</td>
+                  <td>${item.created_date}</td>
+                  <td>${item.due_date}</td>
+                  <td>${item.last_updated}</td>
+                  <td>${item.resolved_date}</td>
+                  <td>${item.logged_user}</td>
+                </tr>
+              `).join('')}
+            </table>
+          `).join('')}
+        `;
+      }
+
+      function renderManagementDashboard(data) {
+        // Your logic to render management dashboard tables goes here
+        console.log(data);
+      }
+    </script>
+  </body>
+</html>
