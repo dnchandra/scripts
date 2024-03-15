@@ -1,0 +1,130 @@
+from flask import Flask, render_template, request, jsonify
+from jira import JIRA
+from datetime import datetime
+from dateutil import parser
+
+# Initialize Flask app and JIRA client
+app = Flask(__name__)
+options = {'server': 'https://server.local'}
+username = 'username'
+api_token = 'api_token'
+jira = JIRA(options=options, basic_auth=(username, api_token))
+
+# Define routes
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/get_issues', methods=['POST'])
+def get_issues():
+    jira_keys = request.form.get('jira_keys')
+    start_date = request.form.get('start_date')
+    end_date = request.form.get('end_date')
+
+    if not jira_keys or not start_date or not end_date:
+        return jsonify({'error': 'Invalid JIRA key: The value does not exist for the field project.'}), 400
+
+    jira_keys_list = [key.strip() for key in jira_keys.split(',')]
+    issues_data = []
+
+    try:
+        for key in jira_keys_list:
+            jql = f'project = {key} AND created >= "{start_date}" AND created <= "{end_date}"'
+            issues = jira.search_issues(jql)
+
+            for issue in issues:
+                issue_data = serialize_issue(issue)
+                issues_data.append(issue_data)
+
+        return jsonify({'issues_data': issues_data})
+    except Exception as e:
+        error_message = str(e)
+        if 'The value' in error_message and 'does not exist for the field' in error_message:
+            return jsonify({'error': f'Invalid JIRA key: {error_message}'}), 400
+        else:
+            return jsonify({'error': 'An error occurred while processing your request'}), 500
+
+@app.route('/generate_dashboard', methods=['POST'])
+def generate_dashboard():
+    jira_keys = request.form.get('jira_keys')
+    start_date = request.form.get('start_date')
+    end_date = request.form.get('end_date')
+
+    if not jira_keys or not start_date or not end_date:
+        return jsonify({'error': 'Missing required parameters'}), 400
+
+    jira_keys_list = [key.strip() for key in jira_keys.split(',')]
+    dashboard_data = {}
+
+    for key in jira_keys_list:
+        jql = f'project = {key} AND created >= "{start_date}" AND created <= "{end_date}"'
+        issues = jira.search_issues(jql)
+
+        assignee_data = {}
+        for issue in issues:
+            assignee = issue.fields.assignee
+            assignee_name = assignee.displayName if assignee else 'Unassigned'
+            time_spent = issue.fields.timespent or 0
+            if assignee_name in assignee_data:
+                assignee_data[assignee_name]['ticket_count'] += 1
+                assignee_data[assignee_name]['time_spent'] += time_spent
+            else:
+                assignee_data[assignee_name] = {'ticket_count': 1, 'time_spent': time_spent}
+
+        dashboard_data[key] = assignee_data
+
+    return jsonify({'dashboard_data': dashboard_data})
+
+@app.route('/execute_jql', methods=['POST'])
+def execute_jql():
+    print("Executing execute_jql route")  # Add this line for debugging
+
+    jql_query = request.form.get('jql_query')
+    print("Received JQL Query:", jql_query)  # Add this line for debugging
+
+    if not jql_query.strip():
+        return jsonify({'error': 'Empty JQL query'}), 400
+
+    try:
+        # Execute the JQL query on the JIRA server
+        jql_result = jira.search_issues(jql_query)
+
+        # Prepare raw JSON response
+        raw_response = [issue.raw for issue in jql_result]
+
+        return jsonify({'jql_result': raw_response})
+    except Exception as e:
+        print("Error in execute_jql route:", str(e))  # Add this line for debugging
+        return jsonify({'error': str(e)}), 500
+
+def serialize_issue(issue):
+    created_date_str = issue.fields.created
+    created_date = parser.parse(created_date_str)  # Parse datetime string with time zone
+
+    updated_date_str = issue.fields.updated
+    updated_date = parser.parse(updated_date_str)  # Parse datetime string with time zone
+
+    resolved_date_str = issue.fields.resolutiondate
+    resolved_date = parser.parse(resolved_date_str) if resolved_date_str else None  # Parse resolution date
+
+    # Convert due date string to datetime object
+    due_date_str = issue.fields.duedate
+    due_date = parser.parse(due_date_str) if due_date_str else None
+
+    return {
+        'key': issue.key,
+        'summary': issue.fields.summary,
+        'status': issue.fields.status.name,
+        'description': issue.fields.description,
+        'priority': issue.fields.priority.name,
+        'assignee': issue.fields.assignee.displayName if issue.fields.assignee else None,
+        'time_spent': issue.fields.timespent,
+        'created_date': datetime.strftime(created_date, "%Y-%m-%d %H:%M:%S"),
+        'due_date': datetime.strftime(due_date, "%Y-%m-%d") if due_date else None,
+        'last_updated': datetime.strftime(updated_date, "%Y-%m-%d %H:%M:%S"),
+        'resolved_date': datetime.strftime(resolved_date, "%Y-%m-%d %H:%M:%S") if resolved_date else None,
+        'logged_user': issue.fields.reporter.displayName
+    }
+
+if __name__ == '__main__':
+    app.run(debug=True)
