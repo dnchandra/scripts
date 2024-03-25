@@ -1,0 +1,90 @@
+from flask import Flask, render_template, request, jsonify
+from jira import JIRA
+from datetime import datetime
+from dateutil import parser
+
+# Initialize Flask app and JIRA client
+app = Flask(__name__)
+options = {'server': 'https://jira.local}
+username = 'username'
+api_token = 'ap_token'
+jira = JIRA(options=options, basic_auth=(username, api_token))
+
+# Define routes
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/generate_dashboard', methods=['POST'])
+def generate_dashboard():
+    jira_keys = request.form.get('jira_keys')
+    start_date = request.form.get('start_date')
+    end_date = request.form.get('end_date')
+
+    if not jira_keys or not start_date or not end_date:
+        return jsonify({'error': 'Missing required parameters'}), 400
+
+    jira_keys_list = [key.strip() for key in jira_keys.split(',')]
+    dashboard_data = {}
+
+    for key in jira_keys_list:
+        jql = f'project = {key} AND created >= "{start_date}" AND created <= "{end_date}"'
+        issues = jira.search_issues(jql)
+
+        assignee_data = {}
+        unassigned_tickets_count = 0  # Initialize count for unassigned tickets
+        backlog_tickets_5_days = 0  # Initialize count for backlog tickets older than 5 days
+        backlog_tickets_10_days = 0  # Initialize count for backlog tickets older than 10 days
+        backlog_tickets_30_days = 0  # Initialize count for backlog tickets older than 30 days
+
+        status_counts = {}  # Dictionary to store ticket counts for each status
+
+        for issue in issues:
+            status = issue.fields.status.name
+            if status in status_counts:
+                status_counts[status] += 1
+            else:
+                status_counts[status] = 1
+
+            if not issue.fields.assignee:
+                unassigned_tickets_count += 1
+
+            created_date = parser.parse(issue.fields.created).date()
+            current_date = datetime.utcnow().date()
+            days_difference = (current_date - created_date).days
+
+            if days_difference >= 30:
+                backlog_tickets_30_days += 1
+            elif days_difference >= 10:
+                backlog_tickets_10_days += 1
+            elif days_difference >= 5:
+                backlog_tickets_5_days += 1
+
+            assignee = issue.fields.assignee
+            assignee_name = assignee.displayName if assignee else 'Unassigned'
+            time_spent = issue.fields.timespent or 0
+            if assignee_name in assignee_data:
+                assignee_data[assignee_name]['ticket_count'] += 1
+                assignee_data[assignee_name]['time_spent'] += time_spent
+            else:
+                assignee_data[assignee_name] = {'ticket_count': 1, 'time_spent': time_spent}
+
+        dashboard_data[key] = {
+            'total_ticket_count': len(issues),  # Total ticket count
+            'unassigned_tickets_count': unassigned_tickets_count,  # Unassigned tickets count
+            'backlog_tickets_5_days': backlog_tickets_5_days,  # Backlog tickets older than 5 days
+            'backlog_tickets_10_days': backlog_tickets_10_days,  # Backlog tickets older than 10 days
+            'backlog_tickets_30_days': backlog_tickets_30_days,  # Backlog tickets older than 30 days
+            'assignee_data': assignee_data,
+            'status_counts': status_counts  # Status-wise ticket counts
+        }
+
+    return render_template('dashboard.html', dashboard_data=dashboard_data)
+
+
+    return render_template('dashboard.html', dashboard_data=dashboard_data)
+
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
