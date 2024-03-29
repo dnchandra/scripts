@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Issues Data</title>
+    <style>
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-bottom: 20px; /* Add some space between tables */
+        }
+        th, td {
+            border: 1px solid #dddddd;
+            text-align: left;
+            padding: 8px;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1>Issues Data</h1>
+    {% for jira_key, issues_list in issues_data.items() %}
+    <h2>Issues for JIRA Key: {{ jira_key }}</h2>
+    <table>
+        <thead>
+            <tr>
+                {% for field_name in issues_list[0] %}
+                <th>{{ field_name }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for issue in issues_list %}
+            <tr>
+                {% for field_name, field_value in issue.items() %}
+                <td>{{ field_value }}</td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endfor %}
+</body>
+</html>
