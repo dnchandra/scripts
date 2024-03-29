@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Issues Data</title>
+</head>
+<body>
+    <h1>Issues Data</h1>
+
+    {% for key, key_data in dashboard_data.items() %}
+        <h2>{{ key }} Issues</h2>
+        <p>Total Tickets: {{ key_data.total_count }}</p>
+        <table border="1">
+            <thead>
+                <tr>
+                    <th>Key</th>
+                    <th>Summary</th>
+                    <th>Assignee</th>
+                    <th>Status</th>
+                    <th>Efforts Logged</th>
+                    <th>Created Date</th>
+                    <th>Resolved Date</th>
+                    <th>Epic Name</th>
+                    <th>Time Spent</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for issue in key_data.issues_data %}
+                    <tr>
+                        <td>{{ issue.key }}</td>
+                        <td>{{ issue.summary }}</td>
+                        <td>{{ issue.assignee }}</td>
+                        <td>{{ issue.status }}</td>
+                        <td>{{ issue.efforts_logged }}</td>
+                        <td>{{ issue.created_date }}</td>
+                        <td>{{ issue.resolved_date }}</td>
+                        <td>{{ issue.epic_name }}</td>
+                        <td>
+                            <table border="1">
+                                <thead>
+                                    <tr>
+                                        <th>User</th>
+                                        <th>Time Spent</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for time_entry in issue.time_tracking %}
+                                        <tr>
+                                            <td>{{ time_entry.user }}</td>
+                                            <td>{{ time_entry.time_spent }}</td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endfor %}
+</body>
+</html>
