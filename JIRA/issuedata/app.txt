@@ -1,0 +1,54 @@
+from flask import Flask, render_template, request, jsonify
+from jira import JIRA
+
+# Initialize Flask app and JIRA client
+app = Flask(__name__)
+
+# Initialize JIRA client
+options = {'server': 'https://jira.local'}
+username = 'username'
+api_token = 'apitoken'
+jira = JIRA(options=options, basic_auth=(username, api_token))
+
+# Define routes
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/get_issues', methods=['POST'])
+def get_issues():
+    jira_keys_input = request.form.get('jira_key')
+    start_date = request.form.get('start_date')
+    end_date = request.form.get('end_date')
+
+    if not all([jira_keys_input, start_date, end_date]):
+        return jsonify({'error': 'Missing required parameters'}), 400
+
+    jira_keys = [key.strip() for key in jira_keys_input.split(',')]
+    issues_data = {}
+
+    for jira_key in jira_keys:
+        jql = f'project = "{jira_key}" AND created >= "{start_date}" AND created <= "{end_date}"'
+        try:
+            issues = jira.search_issues(jql)
+
+            # Initialize the list of issues for this key
+            issues_data[jira_key] = []
+
+            for issue in issues:
+                issue_data = serialize_issue(issue)
+                issues_data[jira_key].append(issue_data)
+
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    return render_template('issues_data.html', issues_data=issues_data)
+
+
+
+def serialize_issue(issue):
+    issue_data = issue.raw['fields']
+    return issue_data
+
+if __name__ == '__main__':
+    app.run(debug=True)
