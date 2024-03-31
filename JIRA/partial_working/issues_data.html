@@ -1,63 +1,129 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Issues Data</title>
-</head>
-<body>
-    <h1>Issues Data</h1>
 
-    {% for key, key_data in dashboard_data.items() %}
-        <h2>{{ key }} Issues</h2>
-        <p>Total Tickets: {{ key_data.total_count }}</p>
-        <table border="1">
-            <thead>
+<head>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: linear-gradient(45deg, #b7bdc4, #2989d8);
+      color: #111111;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px;
+      box-shadow: 0 2px 5px rgba(190, 189, 189, 0.3);
+      background-color: #ebebeb;
+    }
+
+    .logo {
+      width: 300px;
+      height: auto;
+      margin-right: 10px;
+    }
+
+    .header-buttons {
+      display: flex;
+      align-items: center; /* Align items vertically */
+    }
+
+    .home-button {
+      margin-left: 10px;
+      padding: 4px 8px;
+      background-color: #2989d8;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background-color 0.3s ease;
+    }
+
+    .print-button {
+      margin-left: 10px;
+      padding: 8px 12px;
+      background-color: #2989d8;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background-color 0.3s ease;
+    }
+
+    .home-button:hover,
+    .print-button:hover {
+      background-color: #1e5799;
+    }
+  </style>
+</head>
+
+<body>
+  <header class="header">
+    <div class="logo-container">
+      <img class="logo" src="/static/logo.png" alt="Logo">
+    </div>
+    <div class="header-buttons"> <!-- Moved inside the header -->
+      <a href="/" class="home-button">Home</a>
+      <button onclick="window.print()" class="print-button">Print</button>
+    </div>
+  </header>
+
+  {% for key, key_data in dashboard_data.items() %}
+  <div class="content">
+    <h2>{{ key }} Issues</h2>
+    <p>Total Tickets: {{ key_data.total_count }}</p>
+    <table border="1">
+      <thead>
+        <tr>
+          <th>Key</th>
+          <th>Summary</th>
+          <th>Assignee</th>
+          <th>Status</th>
+          <th>Efforts Logged</th>
+          <th>Created Date</th>
+          <th>Resolved Date</th>
+          <th>Epic Name</th>
+          <th>Time Spent</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for issue in key_data.issues_data %}
+        <tr>
+          <td>{{ issue.key }}</td>
+          <td>{{ issue.summary }}</td>
+          <td>{{ issue.assignee }}</td>
+          <td>{{ issue.status }}</td>
+          <td>{{ issue.efforts_logged }}</td>
+          <td>{{ issue.created_date }}</td>
+          <td>{{ issue.resolved_date }}</td>
+          <td>{{ issue.epic_name }}</td>
+          <td>
+            <table border="1">
+              <thead>
                 <tr>
-                    <th>Key</th>
-                    <th>Summary</th>
-                    <th>Assignee</th>
-                    <th>Status</th>
-                    <th>Efforts Logged</th>
-                    <th>Created Date</th>
-                    <th>Resolved Date</th>
-                    <th>Epic Name</th>
-                    <th>Time Spent</th>
+                  <th>User</th>
+                  <th>Time Spent</th>
                 </tr>
-            </thead>
-            <tbody>
-                {% for issue in key_data.issues_data %}
-                    <tr>
-                        <td>{{ issue.key }}</td>
-                        <td>{{ issue.summary }}</td>
-                        <td>{{ issue.assignee }}</td>
-                        <td>{{ issue.status }}</td>
-                        <td>{{ issue.efforts_logged }}</td>
-                        <td>{{ issue.created_date }}</td>
-                        <td>{{ issue.resolved_date }}</td>
-                        <td>{{ issue.epic_name }}</td>
-                        <td>
-                            <table border="1">
-                                <thead>
-                                    <tr>
-                                        <th>User</th>
-                                        <th>Time Spent</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for time_entry in issue.time_tracking %}
-                                        <tr>
-                                            <td>{{ time_entry.user }}</td>
-                                            <td>{{ time_entry.time_spent }}</td>
-                                        </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </td>
-                    </tr>
+              </thead>
+              <tbody>
+                {% for time_entry in issue.time_tracking %}
+                <tr>
+                  <td>{{ time_entry.user }}</td>
+                  <td>{{ time_entry.time_spent }}</td>
+                </tr>
                 {% endfor %}
-            </tbody>
-        </table>
-    {% endfor %}
+              </tbody>
+            </table>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endfor %}
 </body>
+
 </html>
