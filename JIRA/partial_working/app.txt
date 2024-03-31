@@ -9,7 +9,7 @@ app = Flask(__name__)
 # Initialize JIRA client
 options = {'server': 'https://jira.local'}
 username = 'username'
-api_token = 'Api_token'
+api_token = 'Api_Token'
 jira = JIRA(options=options, basic_auth=(username, api_token))
 
 # Define routes
@@ -19,9 +19,11 @@ def index():
 
 @app.route('/get_issues', methods=['POST'])
 def get_issues():
-    jira_keys_str = request.form.get('jira_key')  # Corrected parameter name
+    jira_keys_str = request.form.get('jira_keys')  # Corrected parameter name
     start_date_str = request.form.get('start_date')
     end_date_str = request.form.get('end_date')
+
+    print(jira_keys_str,start_date_str,end_date_str)
 
     if not all([jira_keys_str, start_date_str, end_date_str]):
         return jsonify({'error': 'Missing required parameters'}), 400
