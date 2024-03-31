@@ -5,7 +5,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Management Dashboard</title>
-  <!-- <script src="templates/chart.js"></script> -->
   <script src="{{ url_for('static', filename='chart.js') }}"></script>
   <style>
     body {
@@ -20,10 +19,39 @@
       margin-left: 20px;
     }
 
-    #printButton {
+    #dashboardContainer {
+      margin-left: 20px;
+    }
+
+    .logo {
+      width: 300px;
+      height: auto;
+      margin-right: 10px;
+    }
+
+    .header-buttons {
+      display: flex;
+      align-items: center;
       margin-left: auto;
-      margin-bottom: 20px;
       margin-right: 20px;
+      margin-bottom: 20px;
+    }
+
+    .home-button,
+    .print-button {
+      margin-left: 10px;
+      padding: 8px 12px;
+      background-color: #2989d8;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background-color 0.3s ease;
+    }
+
+    .home-button:hover,
+    .print-button:hover {
+      background-color: #1e5799;
     }
 
     .project {
@@ -48,7 +76,6 @@
     }
 
     .table-container {
-      #border: 1px solid #ccc;
       padding: 10px;
       margin-bottom: 20px;
     }
@@ -62,12 +89,18 @@
       height: auto;
     }
   </style>
-  
 </head>
 
 <body>
-  <h1>Management Dashboard</h1>
-  <button id="printButton">Print</button>
+  <div class="header-buttons">
+    <a href="/" class="home-button">Home</a>
+    <button id="printButton" class="print-button">Print</button>
+  </div>
+
+  <div>
+    <img class="logo" src="/static/logo.png" alt="Logo">
+  </div>
+
   <div id="dashboardContainer">
     {% for project, project_data in dashboard_data.items() %}
     <div class="project">
@@ -151,7 +184,6 @@
     {% endfor %}
   </div>
 
-  <!-- JavaScript for Charts and Print Functionality -->
   <script>
     document.addEventListener('DOMContentLoaded', function () {
       {% for project, project_data in dashboard_data.items() %}
