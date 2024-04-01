@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Management Dashboard</title>
+  <!-- Add any additional CSS or JavaScript libraries as needed -->
+</head>
+
+<body>
+  <h1>Management Dashboard</h1>
+
+  <div id="dashboardContainer">
+    {% for project, project_data in dashboard_data.items() %}
+    <div class="project">
+      <h2>Project: {{ project }}</h2>
+
+      <!-- Existing code for other project data -->
+
+      <!-- Parent Tickets and Associated Child Counts Table -->
+      <div class="section">
+        <h3>Parent Tickets and Associated Child Counts with Time Spent</h3>
+        <table border="1">
+          <tr>
+            <th>Parent Ticket</th>
+            <th>Child Ticket Count</th>
+            <th>Time Spent on Child Tickets (hours:minutes)</th>
+            <th>Parent Ticket Summary</th>  <!-- Added column for parent ticket summary -->
+          </tr>
+          {% for parent_ticket, child_count in project_data.parent_tickets.items() %}
+          <tr>
+            <td>{{ parent_ticket }}</td>
+            <td>{{ child_count }}</td>
+            <td>
+              {% if parent_ticket in project_data.child_time_spent %}
+              {% set time_spent = project_data.child_time_spent[parent_ticket] %}
+              {% set hours = time_spent // 3600 %}
+              {% set minutes = (time_spent % 3600) // 60 %}
+              {{ "{:02d}:{:02d}".format(hours, minutes) }}
+              {% else %}
+              N/A
+              {% endif %}
+            </td>
+            <td>
+              {% if parent_ticket in project_data.parent_ticket_summaries %}
+              {{ project_data.parent_ticket_summaries[parent_ticket] }}
+              {% else %}
+              N/A
+              {% endif %}
+            </td> <!-- Display parent ticket summary -->
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Add any additional JavaScript logic here if needed -->
+</body>
+
+</html>
