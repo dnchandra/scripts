@@ -1,0 +1,252 @@
+from flask import Flask, render_template, request, jsonify
+from jira import JIRA
+from datetime import datetime
+from dateutil import parser
+
+# Initialize Flask app and JIRA client
+app = Flask(__name__)
+
+# Initialize JIRA client
+options = {'server': 'https://jira.local'}
+username = 'username'
+api_token = 'api_token'
+jira = JIRA(options=options, basic_auth=(username, api_token))
+
+# Define routes
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/get_issues', methods=['POST'])
+def get_issues():
+    jira_keys_str = request.form.get('jira_keys')
+    start_date_str = request.form.get('start_date')
+    end_date_str = request.form.get('end_date')
+
+    if not all([jira_keys_str, start_date_str, end_date_str]):
+        return jsonify({'error': 'Missing required parameters'}), 400
+
+    jira_keys_list = [key.strip() for key in jira_keys_str.split(',')]
+    dashboard_data = {}
+
+    for jira_key in jira_keys_list:
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+        start_date_utc = start_date.strftime('%Y-%m-%d 00:00')
+        end_date_utc = end_date.strftime('%Y-%m-%d 23:59')
+
+        jql = f'project = "{jira_key}" AND created >= "{start_date_utc}" AND created <= "{end_date_utc}"'
+        try:
+            issues = jira.search_issues(jql)
+
+            issues_data = []
+            for issue in issues:
+                issue_data = serialize_issue(issue)
+                issues_data.append(issue_data)
+
+            total_count = len(issues_data)  # Calculate total ticket count
+            quality_metrics = calculate_quality_metrics(issues)  # Calculate quality metrics
+            dashboard_data[jira_key] = {'issues_data': issues_data, 'total_count': total_count, 'quality_metrics': quality_metrics}
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    return render_template('issues_data.html', dashboard_data=dashboard_data)
+
+def serialize_issue(issue):
+    efforts_logged_seconds = issue.fields.timespent or 0
+    efforts_formatted = format_efforts(efforts_logged_seconds)
+    time_tracking_data = extract_time_tracking_data(issue)
+    assignee_name = get_assignee_name(issue)
+
+    # Extract date part only from created date and convert to local time
+    created_date_local = convert_to_local_date(issue.fields.created)
+
+    # Check if resolutiondate is available and not None before splitting
+    resolved_date_local = convert_to_local_date(issue.fields.resolutiondate) if issue.fields.resolutiondate else 'NA'
+
+    # Fetch ticket status
+    status = issue.fields.status.name
+
+    # Assuming 'customfield_10005' is the Epic Name field ID
+    # epic_name = getattr(issue.fields, 'customfield_10011', None)
+    issuetype = getattr(issue.fields, 'issuetype', None)
+    parent = getattr(issue.fields, 'parent', None)
+    return {
+        'key': issue.key,
+        'summary': issue.fields.summary,
+        'issuetype': issue.fields.issuetype,
+        'assignee': assignee_name,
+        'status': status,
+        'efforts_logged': efforts_formatted,
+        'time_tracking': time_tracking_data,
+        'created_date': created_date_local,
+        'resolved_date': resolved_date_local,
+        'parent': parent
+    }
+
+def convert_to_local_date(datetime_str):
+    # Assuming datetime_str is in ISO8601 format 'YYYY-MM-DDTHH:MM:SS.sss+00:00'
+    if datetime_str:
+        parsed_date = parser.parse(datetime_str)
+        return parsed_date.strftime('%Y-%m-%d %H:%M:%S')
+    return 'NA'
+
+def format_efforts(efforts_logged_seconds):
+    efforts_hours = efforts_logged_seconds // 3600
+    efforts_minutes = (efforts_logged_seconds % 3600) // 60
+    return f"{efforts_hours:02d}:{efforts_minutes:02d}"
+
+def extract_time_tracking_data(issue):
+    time_tracking_data = []
+    for worklog in issue.fields.worklog.worklogs:
+        user_name = worklog.author.displayName
+        time_spent_seconds = worklog.timeSpentSeconds
+        time_spent_formatted = format_efforts(time_spent_seconds)
+        time_tracking_data.append({'user': user_name, 'time_spent': time_spent_formatted})
+    return time_tracking_data
+
+def get_assignee_name(issue):
+    assignee = issue.fields.assignee
+    return assignee.displayName if assignee else 'Unassigned'
+
+def calculate_quality_metrics(issues):
+    metrics = {
+        'Summary not clear': 0,
+        'Epic not linked': 0,
+        'Work log not entered': 0,
+        'Issue description is blank': 0
+    }
+
+    for issue in issues:
+        if len(issue.fields.summary.split()) < 3 and 'fw:' in issue.fields.summary.lower():
+            metrics['Summary not clear'] += 1
+
+        if issue.fields.issuetype.name.lower() in ['story', 'task'] and not issue.fields.summary:
+            metrics['Epic not linked'] += 1
+
+        if issue.fields.status.name.lower() == 'closed' and (issue.fields.timespent is None or issue.fields.timespent == 0):
+            metrics['Work log not entered'] += 1
+
+        if not issue.fields.description:
+            metrics['Issue description is blank'] += 1
+
+    return metrics
+
+
+@app.route('/generate_dashboard', methods=['GET', 'POST'])
+def generate_dashboard():
+    if request.method == 'POST':
+        jira_keys_str = request.form.get('jira_keys')
+        start_date_str = request.form.get('start_date')
+        end_date_str = request.form.get('end_date')
+    elif request.method == 'GET':
+        jira_keys_str = request.args.get('jira_keys')
+        start_date_str = request.args.get('start_date')
+        end_date_str = request.args.get('end_date')
+    else:
+        return jsonify({'error': 'Method not allowed'}), 405
+
+    if not all([jira_keys_str, start_date_str, end_date_str]):
+        return jsonify({'error': 'Missing required parameters'}), 400
+
+    jira_keys_list = [key.strip() for key in jira_keys_str.split(',')]
+    dashboard_data = {}  # Initialize dashboard_data here
+
+    for key in jira_keys_list:
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+        start_date_utc = start_date.strftime('%Y-%m-%d 00:00')
+        end_date_utc = end_date.strftime('%Y-%m-%d 23:59')
+
+        jql = f'project = "{key}" AND created >= "{start_date_utc}" AND created <= "{end_date_utc}"'
+        try:
+            issues = jira.search_issues(jql)
+
+            assignee_data = {}
+            unassigned_tickets_count = 0
+            backlog_tickets_5_days = 0
+            backlog_tickets_10_days = 0
+            backlog_tickets_30_days = 0
+            status_counts = {}
+            parent_tickets = {}  # Store parent tickets and associated child counts
+            child_time_spent = {}  # Store time spent on child tickets
+
+            for issue in issues:
+                status = issue.fields.status.name
+                if status in status_counts:
+                    status_counts[status] += 1
+                else:
+                    status_counts[status] = 1
+
+                if not issue.fields.assignee:
+                    unassigned_tickets_count += 1
+
+                created_date = parser.parse(issue.fields.created).date()
+                current_date = datetime.utcnow().date()
+                days_difference = (current_date - created_date).days
+
+                if days_difference >= 30:
+                    backlog_tickets_30_days += 1
+                elif days_difference >= 10:
+                    backlog_tickets_10_days += 1
+                elif days_difference >= 5:
+                    backlog_tickets_5_days += 1
+
+                assignee = issue.fields.assignee
+                assignee_name = assignee.displayName if assignee else 'Unassigned'
+                time_spent = issue.fields.timespent or 0
+                if assignee_name in assignee_data:
+                    assignee_data[assignee_name]['ticket_count'] += 1
+                    assignee_data[assignee_name]['time_spent'] += time_spent
+                else:
+                    assignee_data[assignee_name] = {'ticket_count': 1, 'time_spent': time_spent}
+
+                # Check if issue has a parent
+                parent = getattr(issue.fields, 'parent', None)
+                if parent:
+                    parent_key = parent.key
+                    if parent_key in parent_tickets:
+                        parent_tickets[parent_key] += 1
+                        child_time_spent[parent_key] += time_spent  # Add time spent on child tickets
+                    else:
+                        parent_tickets[parent_key] = 1
+                        child_time_spent[parent_key] = time_spent
+
+            # Calculate parent ticket summaries
+            parent_ticket_summaries = {}
+            for parent_ticket in parent_tickets:
+                parent_ticket_summaries[parent_ticket] = get_parent_ticket_summary(parent_ticket)
+
+            # Add logic for calculating JIRA quality metrics
+            quality_metrics = calculate_quality_metrics(issues)
+
+            # Update dashboard_data with calculated data
+            dashboard_data[key] = {
+                'total_ticket_count': len(issues),
+                'unassigned_tickets_count': unassigned_tickets_count,
+                'backlog_tickets_5_days': backlog_tickets_5_days,
+                'backlog_tickets_10_days': backlog_tickets_10_days,
+                'backlog_tickets_30_days': backlog_tickets_30_days,
+                'assignee_data': assignee_data,
+                'status_counts': status_counts,
+                'parent_tickets': parent_tickets,
+                'child_time_spent': child_time_spent,
+                'quality_metrics': quality_metrics,
+                'parent_ticket_summaries': parent_ticket_summaries  # Include parent ticket summaries
+            }
+            
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    return render_template('dashboard.html', dashboard_data=dashboard_data)
+
+def get_parent_ticket_summary(parent_ticket):
+    # Placeholder function, implement your logic to fetch or generate parent ticket summary
+    try:
+        parent_issue = jira.issue(parent_ticket)
+        return parent_issue.fields.summary
+    except Exception as e:
+        return f"Error fetching summary for {parent_ticket}: {str(e)}"
+
+if __name__ == '__main__':
+    app.run(debug=True)
