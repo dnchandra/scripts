@@ -201,13 +201,22 @@
         <h3>Parent Tickets and Associated Child Counts with Time Spent</h3>
         <table border="1">
           <tr>
-            <th>Parent Ticket</th>
+            <!-- <th>Parent Ticket</th> -->
+            <th>Parent Ticket Summary</th>  <!-- Added column for parent ticket summary -->
             <th>Child Ticket Count</th>
             <th>Time Spent on Child Tickets (hours:minutes)</th>
+            
           </tr>
           {% for parent_ticket, child_count in project_data.parent_tickets.items() %}
           <tr>
-            <td>{{ parent_ticket }}</td>
+            <!--<td>{{ parent_ticket }}</td> -->
+            <td>
+              {% if parent_ticket in project_data.parent_ticket_summaries %}
+              {{ project_data.parent_ticket_summaries[parent_ticket] }}
+              {% else %}
+              N/A
+              {% endif %}
+            </td> <!-- Display parent ticket summary -->
             <td>{{ child_count }}</td>
             <td>
               {% if parent_ticket in project_data.child_time_spent %}
@@ -219,13 +228,12 @@
               N/A
               {% endif %}
             </td>
+
           </tr>
           {% endfor %}
         </table>
-        <div class="section">
-          <div class="chart-container">
-            <canvas id="childTimeSpentChart{{ project }}" width="400" height="400"></canvas>
-          </div>
+        <div class="chart-container">
+          <canvas id="childTimeSpentChart{{ project }}" width="400" height="400"></canvas>
         </div>
       </div>
 
@@ -239,102 +247,103 @@
     document.addEventListener('DOMContentLoaded', function () {
       {% for project, project_data in dashboard_data.items() %}
       // Status-wise Ticket Counts Chart
-var statusLabels{{ project }} = Object.keys({{ project_data.status_counts | tojson | safe }});
-var statusData{{ project }} = Object.values({{ project_data.status_counts | tojson | safe }});
+      var statusLabels{{ project }} = Object.keys({{ project_data.status_counts | tojson | safe }});
+      var statusData{{ project }} = Object.values({{ project_data.status_counts | tojson | safe }});
 
-// Calculate total ticket count for normalization
-var totalTickets = statusData{{ project }}.reduce((acc, cur) => acc + cur, 0);
+      // Calculate total ticket count for normalization
+      var totalTickets{{ project }} = statusData{{ project }}.reduce((acc, cur) => acc + cur, 0);
 
-var statusPercentageData{{ project }} = {
-  labels: statusLabels{{ project }},
-  datasets: [{
-    label: 'Ticket Percentage',
-    data: statusData{{ project }}.map(item => (item / totalTickets) * 100),
-    backgroundColor: statusLabels{{ project }}.map(function (status) {
-      if (status === 'To Do') {
-        return 'rgba(255, 99, 132, 0.7)';
-      } else if (status === 'In Progress') {
-        return 'rgba(54, 162, 235, 0.7)';
-      } else if (status === 'Launched') {
-        return 'rgba(0, 255, 0, 0.7)';
-      } else {
-        return 'rgba(255, 206, 86, 0.7)';
-      }
-    }),
-    borderWidth: 1
-  }]
-};
+      var statusPercentageData{{ project }} = {
+        labels: statusLabels{{ project }},
+        datasets: [{
+          label: 'Ticket Percentage',
+          data: statusData{{ project }}.map(item => (item / totalTickets{{ project }}) * 100),
+          backgroundColor: statusLabels{{ project }}.map(function (status) {
+            if (status === 'To Do') {
+              return 'rgba(255, 99, 132, 0.7)';
+            } else if (status === 'In Progress') {
+              return 'rgba(54, 162, 235, 0.7)';
+            } else if (status === 'Launched') {
+              return 'rgba(0, 255, 0, 0.7)';
+            } else {
+              return 'rgba(255, 206, 86, 0.7)';
+            }
+          }),
+          borderWidth: 1
+        }]
+      };
 
-var statusPercentageChart{{ project }} = new Chart(document.getElementById('statusChart{{ project }}'), {
-  type: 'pie',
-  data: statusPercentageData{{ project }},
-  options: {
-    responsive: false,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: {
-        position: 'top',
-      },
-      title: {
-        display: true,
-        text: 'Status-wise Ticket Percentage - {{ project }}'
-      }
-    }
-  }
-});
+      var statusPercentageChart{{ project }} = new Chart(document.getElementById('statusChart{{ project }}'), {
+        type: 'pie',
+        data: statusPercentageData{{ project }},
+        options: {
+          responsive: false,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              position: 'top',
+            },
+            title: {
+              display: true,
+              text: 'Status-wise Ticket Percentage - {{ project }}'
+            }
+          }
+        }
+      });
 
       // Assignee-wise Ticket Counts Chart
-var assigneeLabels{{ project }} = Object.keys({{ project_data.assignee_data | tojson | safe }});
-var assigneeData{{ project }} = Object.values({{ project_data.assignee_data | tojson | safe }});
+      var assigneeLabels{{ project }} = Object.keys({{ project_data.assignee_data | tojson | safe }});
+      var assigneeData{{ project }} = Object.values({{ project_data.assignee_data | tojson | safe }});
 
-// Calculate total ticket count for normalization
-var totalTickets = assigneeData{{ project }}.reduce((acc, cur) => acc + cur.ticket_count, 0);
+      // Calculate total ticket count for normalization
+      var totalTicketsAssignee{{ project }} = assigneeData{{ project }}.reduce((acc, cur) => acc + cur.ticket_count, 0);
 
-var assigneePercentageData{{ project }} = {
-  labels: assigneeLabels{{ project }},
-  datasets: [{
-    label: 'Ticket Percentage',
-    data: assigneeData{{ project }}.map(item => (item.ticket_count / totalTickets) * 100),
-    backgroundColor: [
-      'rgba(255, 99, 132, 0.7)',
-      'rgba(54, 162, 235, 0.7)',
-      'rgba(255, 206, 86, 0.7)',
-      'rgba(75, 192, 192, 0.7)',
-      'rgba(153, 102, 255, 0.7)',
-      'rgba(255, 159, 64, 0.7)',
-      'rgba(50, 100, 150, 0.7)'
-    ],
-    borderWidth: 1
-  }]
-};
+      var assigneePercentageData{{ project }} = {
+        labels: assigneeLabels{{ project }},
+        datasets: [{
+          label: 'Ticket Percentage',
+          data: assigneeData{{ project }}.map(item => (item.ticket_count / totalTicketsAssignee{{ project }}) * 100),
+          backgroundColor: [
+            'rgba(255, 99, 132, 0.7)',
+            'rgba(54, 162, 235, 0.7)',
+            'rgba(255, 206, 86, 0.7)',
+            'rgba(75, 192, 192, 0.7)',
+            'rgba(153, 102, 255, 0.7)',
+            'rgba(255, 159, 64, 0.7)',
+            'rgba(50, 100, 150, 0.7)'
+          ],
+          borderWidth: 1
+        }]
+      };
 
-var assigneePercentageChart{{ project }} = new Chart(document.getElementById('assigneeChart{{ project }}'), {
-  type: 'bar',
-  data: assigneePercentageData{{ project }},
-  options: {
-    responsive: false,
-    maintainAspectRatio: false,
-    plugins: {
-      // Remove the legend configuration
-      legend: {
-        display: false
-      },
-      title: {
-        display: true,
-        text: 'Assignee-wise Ticket Percentage - {{ project }}'
-      }
-    },
-    scales: {
-      y: {
-        beginAtZero: true,
-        title: {
-          display: true,
-          text: 'Percentage (%)'
+      var assigneePercentageChart{{ project }} = new Chart(document.getElementById('assigneeChart{{ project }}'), {
+        type: 'bar',
+        data: assigneePercentageData{{ project }},
+        options: {
+          responsive: false,
+          maintainAspectRatio: false,
+          plugins: {
+            // Remove the legend configuration
+            legend: {
+              display: false
+            },
+            title: {
+              display: true,
+              text: 'Assignee-wise Ticket Percentage - {{ project }}'
+            }
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              title: {
+                display: true,
+                text: 'Percentage (%)'
+              }
+            }
+          }
         }
-      }
-    }
-  }
-});
+      });
+
       // Child Time Spent Chart
       var parentTickets{{ project }} = Object.keys({{ project_data.parent_tickets | tojson | safe }});
       var timeSpentData{{ project }} = Object.values({{ project_data.child_time_spent | tojson | safe }});
