@@ -1,0 +1,27 @@
+backgroundColor: [
+  'rgba(230, 25, 75, 0.7)',    // Vivid Red
+  'rgba(60, 180, 75, 0.7)',    // Vivid Green
+  'rgba(255, 225, 25, 0.7)',   // Vivid Yellow
+  'rgba(0, 130, 200, 0.7)',    // Vivid Blue
+  'rgba(245, 130, 48, 0.7)',   // Vivid Orange
+  'rgba(145, 30, 180, 0.7)',   // Vivid Purple
+  'rgba(70, 240, 240, 0.7)',   // Vivid Cyan
+  'rgba(240, 50, 230, 0.7)',   // Vivid Magenta
+  'rgba(210, 245, 60, 0.7)',   // Vivid Lime
+  'rgba(250, 190, 190, 0.7)',  // Light Pink
+  'rgba(0, 128, 128, 0.7)',    // Teal
+  'rgba(230, 190, 255, 0.7)',  // Lavender
+  'rgba(170, 110, 40, 0.7)',   // Brown
+  'rgba(255, 250, 200, 0.7)',  // Beige
+  'rgba(128, 0, 0, 0.7)',      // Maroon
+  'rgba(170, 255, 195, 0.7)',  // Mint
+  'rgba(128, 128, 0, 0.7)',    // Olive
+  'rgba(255, 215, 180, 0.7)',  // Apricot
+  'rgba(0, 0, 128, 0.7)',      // Navy
+  'rgba(128, 128, 128, 0.7)',  // Grey
+  'rgba(255, 250, 250, 0.7)',  // Snow
+  'rgba(255, 165, 0, 0.7)',    // Orange
+  'rgba(0, 255, 127, 0.7)',    // Spring Green
+  'rgba(139, 69, 19, 0.7)',    // Saddle Brown
+  'rgba(255, 255, 0, 0.7)'     // Yellow
+]
