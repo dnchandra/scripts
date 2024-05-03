@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Issues Data</title>
+    
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(45deg, #b7bdc4, #2989d8);
+            color: #111111;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 20px;
+            box-shadow: 0 2px 5px rgba(190, 189, 189, 0.3);
+            background-color: #ebebeb;
+        }
+
+        .logo {
+            width: 300px;
+            height: auto;
+            margin-right: 10px;
+        }
+
+        .header-buttons {
+            display: flex;
+            align-items: center; /* Align items vertically */
+        }
+
+        .home-button,
+        .print-button,
+        .export-button {
+            margin-left: 10px;
+            padding: 8px 12px;
+            background-color: #2989d8;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+
+        .home-button:hover,
+        .print-button:hover,
+        .export-button:hover {
+            background-color: #1e5799;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th,
+        td {
+            border: 1px solid #dddddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #ebebeb;
+        }
+    </style>
+</head>
+
+<body>
+    <header class="header">
+        <div class="logo-container">
+            <img class="logo" src="/static/logo.png" alt="Logo">
+        </div>
+        <div class="header-buttons">
+            <a href="/" class="home-button">Home</a>
+            <button onclick="window.print()" class="print-button">Print</button>
+            <button onclick="exportToExcel()" class="export-button">Export to Excel</button>
+        </div>
+    </header>
+
+    {% for key, key_data in dashboard_data.items() %}
+    <div class="content">
+        <h2>{{ key }} Issues</h2>
+        <p>Total Tickets: {{ key_data.total_count }}</p>
+        <table id="issuesTable_{{ key }}" border="1">
+            <thead>
+                <tr>
+                    <th>Key</th>
+                    <th>Summary</th>
+                    <th>Issue Type</th>
+                    <th>Assignee</th>
+                    <th>Status</th>
+                    <th>Efforts Logged</th>
+                    <th>Created Date</th>
+                    <th>Resolved Date</th>
+                    <th>Parent</th>
+                    <th>User | Time Spent</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for issue in key_data.issues_data %}
+                <tr>
+                    <td>{{ issue.key }}</td>
+                    <td>{{ issue.summary }}</td>
+                    <td>{{ issue.issuetype }}</td>
+                    <td>{{ issue.assignee }}</td>
+                    <td>{{ issue.status }}</td>
+                    <td>{{ issue.efforts_logged }}</td>
+                    <td>{{ issue.created_date }}</td>
+                    <td>{{ issue.resolved_date }}</td>
+                    <td>{{ issue.parent }}</td>
+                    <td>
+                        {% for time_entry in issue.time_tracking %}
+                            {{ time_entry.user }} - {{ time_entry.time_spent }}<br>
+                        {% endfor %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endfor %}
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.4/xlsx.full.min.js"></script>
+    <script>
+        function exportToExcel() {
+            try {
+                const wb = XLSX.utils.book_new();
+                {% for key, key_data in dashboard_data.items() %}
+                const ws = XLSX.utils.table_to_sheet(document.getElementById('issuesTable_{{ key }}'));
+                XLSX.utils.book_append_sheet(wb, ws, '{{ key }} Issues');
+                {% endfor %}
+                XLSX.writeFile(wb, 'issues_data.xlsx');
+            } catch (error) {
+                console.error('Error exporting to Excel:', error);
+            }
+        }
+    </script>
+</body>
+
+</html>
