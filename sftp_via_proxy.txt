@@ -1,0 +1,30 @@
+1. create a file sftp_via_proxy.sh
+
++++++++++++++++
+#!/bin/bash
+
+
+KEYFILE="/path/to/keyfile"
+FTP_USER="your_username"
+FTP_SERVER="ftpserver"
+PROXY="proxy:8080"
+PROXY_USER="proxy_username"
+PROXY_PASS="proxy_password"
+
+
+PROXY_AUTH=$(echo -n "$PROXY_USER:$PROXY_PASS" | base64)
+
+sftp -vvv -o "ProxyCommand=echo -ne 'CONNECT %h:%p HTTP/1.1\r\nProxy-Authorization: Basic $PROXY_AUTH\r\n\r\n' | openssl s_client -connect $PROXY" -i "$KEYFILE" "$FTP_USER@$FTP_SERVER"
+
+
+++++++++++++++++++++++++++++++++
+
+2. chmod +x sftp_via_proxy.sh
+
+3. ./sftp_via_proxy.sh
+
+4. <<GRAB and save above output as "3rd_step.out">>
+
+5. ssh -vvv -i /path/to/keyfile -o "ProxyCommand=echo -ne 'CONNECT %h:%p HTTP/1.1\r\nProxy-Authorization: Basic $PROXY_AUTH\r\n\r\n' | openssl s_client -connect $PROXY" "$FTP_USER@$FTP_SERVER"
+
+6. <<GRAB and save above output as "5th_step.out">>
