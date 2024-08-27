@@ -1,0 +1,56 @@
+- name: Display SSH Key Information
+  hosts: "{{ servers }}"
+  gather_facts: no
+  vars:
+    ansible_user: "{{ ansible_user | default('defaultuser') }}"  # Default value, replace with actual default if needed
+    authorized_keys_path: "/sshkeys/ssh/{{ ansible_user }}/authorized_keys"
+  tasks:
+    - name: Take backup of authorized_keys
+      ansible.builtin.shell: |
+        cp {{ authorized_keys_path }} {{ authorized_keys_path }}_$(date +'%Y_%m_%d_%H_%M_%S')
+      args:
+        executable: /bin/bash
+
+    - name: Read authorized_keys file
+      ansible.builtin.shell: |
+        cat {{ authorized_keys_path }}
+      register: authorized_keys_content
+
+    - name: Extract key information
+      ansible.builtin.shell: |
+        echo "{{ authorized_keys_content.stdout }}" | while IFS= read -r line; do
+          # Skip empty lines or comments
+          if [[ -z "$line" || "$line" =~ ^# ]]; then
+            continue
+          fi
+
+          # Remove any options or parameters before the key type
+          key_line=$(echo "$line" | sed 's/^.*ssh-/ssh-/')
+
+          # Process lines with key starting patterns (ssh-)
+          if [[ "$key_line" =~ ^ssh- ]]; then
+            temp_file="/tmp/ansible_key_$(uuidgen).pub"
+            echo "$key_line" > "$temp_file"
+
+            output=$(ssh-keygen -E md5 -lf "$temp_file")
+            bit_size=$(echo "$output" | awk '{print $1}')
+            fingerprint=$(echo "$output" | awk '{print $2}' | sed 's/^MD5://')
+
+            key_type=$(echo "$key_line" | awk '{print $1}')
+            key_content=$(echo "$key_line" | awk '{print $2}')
+            key_comment=$(echo "$key_line" | awk '{print $3}')
+
+            printf "KEY TYPE: %s\nKEY STRENGTH: %s bits\nFINGERPRINT: %s\nKEY CONTENT: %s\nCOMMENT: %s\n------------------------\n" \
+                   "$key_type" "$bit_size" "$fingerprint" "$key_content" "$key_comment"
+
+            rm -f "$temp_file"
+          fi
+        done
+      register: key_info
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Show key information
+      ansible.builtin.debug:
+        msg: "{{ key_info.stdout_lines }}"
