@@ -1,0 +1,62 @@
+- name: Display SSH Key Information
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Backup authorized_keys file
+      ansible.builtin.shell: |
+        cp $HOME/.ssh/authorized_keys $HOME/.ssh/authorized_keys_$(date +"%Y_%m_%d_%H_%M_%S")
+      register: backup_result
+      changed_when: false
+
+    - name: Read authorized_keys file
+      ansible.builtin.shell: |
+        cat $HOME/.ssh/authorized_keys
+      register: authorized_keys_content
+
+    - name: Extract key information
+      ansible.builtin.shell: |
+        temp_files=()  # Initialize an array to store temp files
+        echo "{{ authorized_keys_content.stdout }}" | while IFS= read -r line; do
+          # Skip empty lines or comments
+          if [[ -z "$line" || "$line" =~ ^# ]]; then
+            continue
+          fi
+
+          # Remove any options or parameters before the key type
+          key_line=$(echo "$line" | sed 's/^.*ssh-/ssh-/')
+
+          # Process lines with key starting patterns (ssh-)
+          if [[ "$key_line" =~ ^ssh- ]]; then
+            temp_file="/tmp/ansible_key_$(uuidgen).pub"
+            echo "$key_line" > "$temp_file"
+            temp_files+=("$temp_file")  # Store the temp file path
+
+            output=$(ssh-keygen -E md5 -lf "$temp_file")
+            bit_size=$(echo "$output" | awk '{print $1}')
+            fingerprint=$(echo "$output" | awk '{print $2}' | sed 's/^MD5://')
+
+            key_type=$(echo "$key_line" | awk '{print $1}')
+            key_content=$(echo "$key_line" | awk '{print $2}')
+            key_comment=$(echo "$key_line" | awk '{print $3}')
+
+            printf "KEY TYPE: %s\nKEY STRENGTH: %s bits\nFINGERPRINT: %s\nKEY CONTENT: %s\nCOMMENT: %s\n------------------------\n" \
+                   "$key_type" "$bit_size" "$fingerprint" "$key_content" "$key_comment"
+          fi
+        done
+
+        # Clean up temp files after processing
+        for file in "${temp_files[@]}"; do
+          rm -f "$file"
+        done
+      register: key_info
+      changed_when: false
+
+    - name: Show key information
+      ansible.builtin.debug:
+        msg: "{{ key_info.stdout_lines }}"
+
+    - name: Remove any leftover temp files (additional cleanup)
+      ansible.builtin.shell: |
+        rm -f /tmp/ansible_key_*.pub
+      when: key_info is defined
+      changed_when: false
