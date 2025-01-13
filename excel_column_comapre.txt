@@ -1,0 +1,27 @@
+
+Sub HighlightMatchesInColumnC()
+    Dim ws As Worksheet
+    Dim lastRowC As Long, lastRowI As Long
+    Dim cell As Range, matchRange As Range
+
+    ' Set the active worksheet
+    Set ws = ThisWorkbook.Sheets("Sheet1")
+
+    ' Find the last row in Column C and I
+    lastRowC = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+    lastRowI = ws.Cells(ws.Rows.Count, "I").End(xlUp).Row
+
+    ' Set the range to check in Column I
+    Set matchRange = ws.Range("I1:I" & lastRowI)
+
+    ' Loop through each cell in Column C
+    For Each cell In ws.Range("C1:C" & lastRowC)
+        If Application.WorksheetFunction.CountIf(matchRange, cell.Value) > 0 Then
+            cell.Interior.Color = vbYellow  ' Highlight in Yellow
+        Else
+            cell.Interior.ColorIndex = xlNone  ' Clear existing color if no match
+        End If
+    Next cell
+
+    MsgBox "Highlighting complete!"
+End Sub
