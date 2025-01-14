@@ -5,14 +5,14 @@ from openpyxl import load_workbook
 file_path = "Testdomain.xlsx"
 excel_data = pd.ExcelFile(file_path)
 
-# Read all sheets into a dictionary
+# Read all sheets into a dictionary, ensuring domain names are cleaned
 sheets_data = {sheet_name: excel_data.parse(sheet_name) for sheet_name in excel_data.sheet_names}
 
 # Convert each sheet's domain list into a set for comparison
 domain_sets = {}
 for sheet_name, data in sheets_data.items():
-    # Assuming domain names are in the first column
-    domain_sets[sheet_name] = set(data.iloc[:, 0].dropna().astype(str))
+    # Assuming domain names are in the first column (ensure it's the correct column)
+    domain_sets[sheet_name] = set(data.iloc[:, 0].dropna().astype(str).apply(lambda x: x.strip().lower()))
 
 # Find common domains across all sheets (appearing in more than one sheet)
 common_domains = {domain for domain, count in pd.Series([domain for sheet in domain_sets.values() for domain in sheet]).value_counts().items() if count > 1}
@@ -37,6 +37,9 @@ for sheet_name, domains in unique_domains.items():
         unique_data.append([domain, sheet_name])
 
 unique_data_df = pd.DataFrame(unique_data, columns=["Domain", "Sheet"])
+
+print("Common Domains:", common_domains)
+print("Unique Domains:", unique_domains)
 
 # Write the data to a new workbook, including common and unique domain sheets
 with pd.ExcelWriter(file_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
