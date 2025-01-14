@@ -15,38 +15,35 @@ for sheet_name, data in sheets_data.items():
     domain_sets[sheet_name] = set(data.iloc[:, 0].dropna().astype(str))
 
 # Find common domains across all sheets
-if domain_sets:
-    common_domains = set.intersection(*domain_sets.values())
-else:
-    common_domains = set()
+common_domains = set.intersection(*domain_sets.values()) if domain_sets else set()
 
 # Find unique domains for each sheet
 unique_domains = {
     sheet_name: domains - common_domains for sheet_name, domains in domain_sets.items()
 }
 
-# Prepare a DataFrame for common domains
-common_domains_df = pd.DataFrame(sorted(common_domains), columns=["Common Domains"])
+# Prepare data for common domains (domain name with sheet names)
+common_data = []
+for domain in common_domains:
+    sheets_with_domain = [sheet_name for sheet_name, domains in domain_sets.items() if domain in domains]
+    common_data.append([domain, ', '.join(sheets_with_domain)])
 
-# Create a combined DataFrame for unique domains
-combined_unique_df = pd.DataFrame()
+common_data_df = pd.DataFrame(common_data, columns=["Domain", "Sheets"])
+
+# Prepare data for unique domains (domain name with sheet names)
+unique_data = []
 for sheet_name, domains in unique_domains.items():
-    unique_df = pd.DataFrame(sorted(domains), columns=[f"Unique in {sheet_name}"])
-    combined_unique_df = pd.concat([combined_unique_df, unique_df], axis=1)
+    for domain in domains:
+        unique_data.append([domain, sheet_name])
 
-# Load the workbook
-book = load_workbook(file_path)
+unique_data_df = pd.DataFrame(unique_data, columns=["Domain", "Sheet"])
 
-# Write results to a new sheet
-with pd.ExcelWriter(file_path, engine='openpyxl', mode='a') as writer:
-    writer.book = book
-    # Remove the old "Processed Data" sheet if it exists
-    if "Processed Data" in writer.book.sheetnames:
-        std = writer.book["Processed Data"]
-        writer.book.remove(std)
+# Load the workbook and write the new data
+with pd.ExcelWriter(file_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+    # Write Common Domains with their sheet names
+    common_data_df.to_excel(writer, sheet_name="Common Data", index=False, startrow=0)
     
-    # Write Common Domains at the top, followed by Unique Domains
-    common_domains_df.to_excel(writer, sheet_name="Processed Data", index=False, startrow=0)
-    combined_unique_df.to_excel(writer, sheet_name="Processed Data", index=False, startrow=len(common_domains_df) + 2)
+    # Write Unique Domains with their sheet names
+    unique_data_df.to_excel(writer, sheet_name="Unique Data", index=False, startrow=0)
 
-print("Processed data has been added to the 'Processed Data' sheet.")
+print("Processed data has been added to the 'Common Data' and 'Unique Data' sheets.")
