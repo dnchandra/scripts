@@ -1,0 +1,52 @@
+import pandas as pd
+from openpyxl import load_workbook
+
+# Load the Excel workbook
+file_path = "Testdomain.xlsx"
+excel_data = pd.ExcelFile(file_path)
+
+# Read all sheets into a dictionary
+sheets_data = {sheet_name: excel_data.parse(sheet_name) for sheet_name in excel_data.sheet_names}
+
+# Convert each sheet's domain list into a set for comparison
+domain_sets = {}
+for sheet_name, data in sheets_data.items():
+    # Assuming domain names are in the first column
+    domain_sets[sheet_name] = set(data.iloc[:, 0].dropna().astype(str))
+
+# Find common domains across all sheets
+if domain_sets:
+    common_domains = set.intersection(*domain_sets.values())
+else:
+    common_domains = set()
+
+# Find unique domains for each sheet
+unique_domains = {
+    sheet_name: domains - common_domains for sheet_name, domains in domain_sets.items()
+}
+
+# Prepare a DataFrame for common domains
+common_domains_df = pd.DataFrame(sorted(common_domains), columns=["Common Domains"])
+
+# Create a combined DataFrame for unique domains
+combined_unique_df = pd.DataFrame()
+for sheet_name, domains in unique_domains.items():
+    unique_df = pd.DataFrame(sorted(domains), columns=[f"Unique in {sheet_name}"])
+    combined_unique_df = pd.concat([combined_unique_df, unique_df], axis=1)
+
+# Load the workbook
+book = load_workbook(file_path)
+
+# Write results to a new sheet
+with pd.ExcelWriter(file_path, engine='openpyxl', mode='a') as writer:
+    writer.book = book
+    # Remove the old "Processed Data" sheet if it exists
+    if "Processed Data" in writer.book.sheetnames:
+        std = writer.book["Processed Data"]
+        writer.book.remove(std)
+    
+    # Write Common Domains at the top, followed by Unique Domains
+    common_domains_df.to_excel(writer, sheet_name="Processed Data", index=False, startrow=0)
+    combined_unique_df.to_excel(writer, sheet_name="Processed Data", index=False, startrow=len(common_domains_df) + 2)
+
+print("Processed data has been added to the 'Processed Data' sheet.")
