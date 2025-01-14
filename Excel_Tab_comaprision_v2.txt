@@ -14,8 +14,8 @@ for sheet_name, data in sheets_data.items():
     # Assuming domain names are in the first column
     domain_sets[sheet_name] = set(data.iloc[:, 0].dropna().astype(str))
 
-# Find common domains across all sheets
-common_domains = set.intersection(*domain_sets.values()) if domain_sets else set()
+# Find common domains across all sheets (appearing in more than one sheet)
+common_domains = {domain for domain, count in pd.Series([domain for sheet in domain_sets.values() for domain in sheet]).value_counts().items() if count > 1}
 
 # Find unique domains for each sheet
 unique_domains = {
