@@ -38,12 +38,12 @@ for sheet_name, domains in unique_domains.items():
 
 unique_data_df = pd.DataFrame(unique_data, columns=["Domain", "Sheet"])
 
-# Load the workbook and write the new data
+# Write the data to a new workbook, including common and unique domain sheets
 with pd.ExcelWriter(file_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
-    # Write Common Domains with their sheet names
+    # Write Common Domains with their sheet names to the "Common Data" sheet
     common_data_df.to_excel(writer, sheet_name="Common Data", index=False, startrow=0)
     
-    # Write Unique Domains with their sheet names
+    # Write Unique Domains with their sheet names to the "Unique Data" sheet
     unique_data_df.to_excel(writer, sheet_name="Unique Data", index=False, startrow=0)
 
 print("Processed data has been added to the 'Common Data' and 'Unique Data' sheets.")
