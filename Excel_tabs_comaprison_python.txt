@@ -31,12 +31,7 @@ for sheet_name, domains in unique_domains.items():
     combined_data = pd.concat([combined_data, unique_df], axis=1)
 
 # Load the workbook to append data
-book = load_workbook(file_path)
-with pd.ExcelWriter(file_path, engine='openpyxl', mode='a') as writer:
-    writer.book = book
-    # Remove the sheet if it already exists
-    if "Processed Data" in writer.book.sheetnames:
-        del writer.book["Processed Data"]
+with pd.ExcelWriter(file_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
     # Write the combined data to the new sheet
     combined_data.to_excel(writer, sheet_name="Processed Data", index=False)
 
