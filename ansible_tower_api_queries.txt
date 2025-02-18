@@ -1,0 +1,5 @@
+curl -k -s -u "your_username:your_password" `
+"https://ANSIBLE_TOWER_URL/api/v2/credentials/" | ConvertFrom-Json | `
+Select-Object -ExpandProperty results | `
+Select-Object @{Name="Username"; Expression={$_.inputs.username}}, credential_type | `
+Export-Csv -Path credentials.csv -NoTypeInformation
