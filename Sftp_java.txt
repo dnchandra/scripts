@@ -1,0 +1,30 @@
+import com.jcraft.jsch.*;
+
+public class SFTPTest {
+    public static void main(String[] args) {
+        String user = "your_user";
+        String host = "your_sftp_host";
+        String privateKey = "/path/to/private_key";
+
+        try {
+            JSch jsch = new JSch();
+            jsch.addIdentity(privateKey);
+
+            Session session = jsch.getSession(user, host, 22);
+            session.setConfig("StrictHostKeyChecking", "no");
+            session.connect(10000); // 10-second timeout
+
+            Channel channel = session.openChannel("sftp");
+            channel.connect();
+
+            ChannelSftp sftpChannel = (ChannelSftp) channel;
+            System.out.println("Connected: " + sftpChannel.isConnected());
+
+            sftpChannel.disconnect();
+            session.disconnect();
+        } catch (Exception e) {
+            e.printStackTrace();
+            System.out.println("SFTP connection failed.");
+        }
+    }
+}
