@@ -1,0 +1,30 @@
+#!/bin/bash
+
+LOG_FILE="/app/services/dynamicserviceregister.log"
+SYSTEMD_DIR="/etc/systemd/system"
+SERVICE_PREFIX="microservice@"
+
+echo "===== $(date) - Running Service Registration =====" >> "$LOG_FILE"
+
+# Register new services
+for service in /app/services/*/child_startup.sh; do
+    service_name=$(basename $(dirname "$service"))
+
+    if ! systemctl list-units --type=service --all | grep -q "${SERVICE_PREFIX}${service_name}.service"; then
+        echo "$(date) - Registering new service: $service_name" | tee -a "$LOG_FILE"
+        systemctl enable "${SERVICE_PREFIX}${service_name}" >> "$LOG_FILE" 2>&1
+        systemctl start "${SERVICE_PREFIX}${service_name}" >> "$LOG_FILE" 2>&1
+    fi
+done
+
+# Check for deleted services
+for service_unit in $(systemctl list-units --type=service --all | grep "${SERVICE_PREFIX}" | awk '{print $1}'); do
+    service_name=$(echo "$service_unit" | sed "s/${SERVICE_PREFIX}\(.*\)\.service/\1/")
+
+    if [[ ! -d "/app/services/$service_name" ]]; then
+        echo "$(date) - Removing deleted service: $service_name" | tee -a "$LOG_FILE"
+        systemctl stop "$service_unit" >> "$LOG_FILE" 2>&1
+        systemctl disable "$service_unit" >> "$LOG_FILE" 2>&1
+        rm -f "${SYSTEMD_DIR}/${service_unit}"  # Remove the service file
+    fi
+done
