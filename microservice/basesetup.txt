@@ -28,21 +28,6 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 
 
-[root@serverb ~]#
-cat /etc/systemd/system/microservice@.service
-cat /etc/systemd/system/microservice-registration.service
-cat /etc/systemd/system/microservice-registration.timer
-cat /etc/systemd/system/microservice-deregistration.service
-cat /etc/systemd/system/microservice-deregistration.timer
-systemctl list-units --type=service | grep microservice@
-systemctl list-timers --all | grep microservice
-
-
-
-
-
-
-
 ++++++++++ /etc/systemd/system/microservice-deregistration.timer ++++++++++
 
 [Unit]
