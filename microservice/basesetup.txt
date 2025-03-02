@@ -1,0 +1,186 @@
+
+[root@serverb ~]#
+cat /etc/systemd/system/microservice@.service
+cat /etc/systemd/system/microservice-registration.service
+cat /etc/systemd/system/microservice-registration.timer
+cat /etc/systemd/system/microservice-deregistration.service
+cat /etc/systemd/system/microservice-deregistration.timer
+systemctl list-units --type=service | grep microservice@
+systemctl list-timers --all | grep microservice
+
+
+
+
+
+
+
+++++++++++ /etc/systemd/system/microservice-deregistration.timer ++++++++++
+[Unit]
+Description=Run microservice deregistration every 30s
+
+[Timer]
+OnUnitActiveSec=30s
+OnBootSec=10s
+Unit=microservice-deregistration.service
+
+[Install]
+WantedBy=timers.target
+
+++++++++++ /etc/systemd/system/microservice-registration.timer ++++++++++
+[Unit]
+Description=Run microservice registration every 30s
+
+[Timer]
+OnUnitActiveSec=30s
+OnBootSec=10s
+Unit=microservice-registration.service
+
+[Install]
+WantedBy=timers.target
+
+++++++++++ /etc/systemd/system/microservice-deregistration.service ++++++++++
+[Unit]
+Description=Microservice Deregistration Service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/msuser/microservice_deregistration.sh
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+
+++++++++++ /etc/systemd/system/microservice-registration.service ++++++++++
+
+[Unit]
+Description=Microservice Registration Service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/msuser/microservice_registration.sh
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+
+++++++++++ /etc/systemd/system/microservice@.service ++++++++++
+
+[Unit]
+Description=Microservice %i
+After=network.target
+
+[Service]
+User=msuser
+WorkingDirectory=/home/msuser/demo/microservices-demo/%i
+ExecStart=/bin/bash -c 'exec java -jar target/%i-1.0-SNAPSHOT.jar >> %i.log 2>&1'
+ExecStop=/bin/bash -c 'pkill -f "java -jar target/%i-1.0-SNAPSHOT.jar"'
+Restart=on-failure
+Type=simple
+
+[Install]
+WantedBy=multi-user.target
+
+
+++++++++++ microservice_deregistration.sh ++++++++++ 
+#!/bin/bash
+
+BASE_DIR="/home/msuser/demo/microservices-demo"
+LOG_FILE="/var/log/microservice_deregistration.log"
+
+stop_service() {
+    local service=$1
+    local service_unit="microservice@${service}.service"
+
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Checking microservice: $service" | tee -a "$LOG_FILE"
+
+    # Stop and disable service if it's registered
+    if systemctl list-units --full -all | grep -q "$service_unit"; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Stopping and deregistering $service" | tee -a "$LOG_FILE"
+        systemctl stop "$service_unit" &>>"$LOG_FILE"
+        systemctl disable "$service_unit" &>>"$LOG_FILE"
+        systemctl reset-failed "$service_unit" &>>"$LOG_FILE"
+
+        # Remove systemd symlink if it exists
+        if [ -L "/etc/systemd/system/multi-user.target.wants/$service_unit" ]; then
+            rm -f "/etc/systemd/system/multi-user.target.wants/$service_unit"
+        fi
+    else
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Skipping $service: Service not registered." | tee -a "$LOG_FILE"
+    fi
+}
+
+# Get list of registered services
+registered_services=$(systemctl list-units --full --all --no-pager --plain --output=json | jq -r '.[] | select(.unit | startswith("microservice@")) | .unit' | sed 's/microservice@//; s/\.service//')
+
+# Loop through registered services
+for service in $registered_services; do
+    service_path="$BASE_DIR/$service"
+
+    # Deregister if service directory is missing or `start-service.sh` is missing
+    if [[ ! -d "$service_path" || ! -f "$service_path/start-service.sh" ]]; then
+        stop_service "$service"
+    else
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Skipping $service: start-service.sh exists." | tee -a "$LOG_FILE"
+    fi
+done
+
+# Reload systemd to apply changes
+systemctl daemon-reload
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') - Microservice deregistration completed." | tee -a "$LOG_FILE"
+
+
+++++++++++  cat microservice_registration.sh ++++++++++ 
+
+#!/bin/bash
+
+BASE_DIR="/home/msuser/demo/microservices-demo"
+LOG_FILE="/var/log/microservice_registration.log"
+
+start_service() {
+    local service=$1
+    local start_script="$BASE_DIR/$service/start-service.sh"
+
+    # Check if start-service.sh exists; if not, skip registration
+    if [[ ! -f "$start_script" ]]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Skipping $service: start-service.sh not found." | tee -a "$LOG_FILE"
+        return
+    fi
+
+    # Check if the service is already enabled and registered
+    if systemctl is-enabled "microservice@$service" &>/dev/null && systemctl list-units --full -all | grep -q "microservice@$service"; then
+        # Check if the service is manually stopped
+        if ! systemctl is-active "microservice@$service" &>/dev/null; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - $service is enabled but manually stopped. Skipping restart." | tee -a "$LOG_FILE"
+        else
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - $service is already running. Skipping." | tee -a "$LOG_FILE"
+        fi
+        return
+    fi
+
+    # If service is not enabled, enable and start it
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Registering microservice: $service" | tee -a "$LOG_FILE"
+    sudo systemctl enable --now "microservice@$service" &>>"$LOG_FILE"
+
+    # Check if the service failed to start and retry once
+    if ! systemctl is-active "microservice@$service" &>/dev/null; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - ERROR: $service failed to start. Retrying..." | tee -a "$LOG_FILE"
+        systemctl restart "microservice@$service" &>>"$LOG_FILE"
+        if ! systemctl is-active "microservice@$service" &>/dev/null; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - ERROR: $service failed again. Manual intervention required!" | tee -a "$LOG_FILE"
+        fi
+    fi
+}
+
+# Loop through only directories in BASE_DIR
+for service in "$BASE_DIR"/*/; do
+    [[ -d "$service" ]] || continue  # Skip non-directories
+    service=$(basename "$service")
+    start_service "$service"
+done
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') - Microservice registration completed." | tee -a "$LOG_FILE"
+
+
