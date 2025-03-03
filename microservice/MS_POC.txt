@@ -177,7 +177,7 @@ register_service() {
         cat <<EOF | sudo tee "$service_file" > /dev/null
 [Unit]
 Description=Microservice $service
-After=network.target
+After=network.target consul.service
 Requires=consul.service
 EOF
 
@@ -210,15 +210,21 @@ EOF
     # Reload systemd
     sudo systemctl daemon-reload
 
+    # Check if service is already running before attempting to start
+    if systemctl is-active --quiet "$service"; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - $service is already running. Skipping." | tee -a "$LOG_FILE"
+        return
+    fi
+
     # Enable and start the service
     echo "$(date '+%Y-%m-%d %H:%M:%S') - Registering and starting microservice: $service" | tee -a "$LOG_FILE"
     sudo systemctl enable --now "$service" &>>"$LOG_FILE"
 
     # Check if service failed and retry once
-    if ! systemctl is-active "$service" &>/dev/null; then
+    if ! systemctl is-active --quiet "$service"; then
         echo "$(date '+%Y-%m-%d %H:%M:%S') - ERROR: $service failed to start. Retrying..." | tee -a "$LOG_FILE"
         sudo systemctl restart "$service" &>>"$LOG_FILE"
-        if ! systemctl is-active "$service" &>/dev/null; then
+        if ! systemctl is-active --quiet "$service"; then
             echo "$(date '+%Y-%m-%d %H:%M:%S') - ERROR: $service failed again. Manual intervention required!" | tee -a "$LOG_FILE"
         fi
     fi
@@ -228,28 +234,26 @@ EOF
 if [[ -d "$BASE_DIR/Consul" ]]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting Consul service..." | tee -a "$LOG_FILE"
     register_service "Consul"
-else
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Skipping Consul: Directory not found." | tee -a "$LOG_FILE"
+
+    # Wait until Consul is fully running
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Waiting for Consul to be active..." | tee -a "$LOG_FILE"
+    while ! systemctl is-active --quiet Consul; do
+        sleep 5
+    done
 fi
 
 # Step 2: Start MonitorService and wait 20 seconds
 if [[ -d "$BASE_DIR/MonitorService" ]]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting MonitorService..." | tee -a "$LOG_FILE"
     register_service "MonitorService"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Waiting for 20 seconds before starting AuthService..." | tee -a "$LOG_FILE"
     sleep 20
-else
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Skipping MonitorService: Directory not found." | tee -a "$LOG_FILE"
 fi
 
 # Step 3: Start AuthService and wait 30 seconds
 if [[ -d "$BASE_DIR/AuthService" ]]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting AuthService..." | tee -a "$LOG_FILE"
     register_service "AuthService"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Waiting for 30 seconds before starting remaining services..." | tee -a "$LOG_FILE"
     sleep 30
-else
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Skipping AuthService: Directory not found." | tee -a "$LOG_FILE"
 fi
 
 # Step 4: Start remaining services in parallel
@@ -269,6 +273,7 @@ done
 wait  # Wait for all parallel services to complete
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') - Microservice registration completed." | tee -a "$LOG_FILE"
+
 
 ++++++++++ /etc/systemd/system/microservice@.service ++++++++++
 
