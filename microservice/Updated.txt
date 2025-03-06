@@ -4,6 +4,42 @@ BASE_DIR="/home/msuser/demo/microservices-demo"
 CONSUL_DIR="/home/msuser/products/consul"
 LOG_FILE="/home/msuser/demo/microservices-demo/microservice_registration.log"
 SYSTEMD_DIR="/etc/systemd/system"
+CONSUL_SERVICE_FILE="$SYSTEMD_DIR/consul.service"
+
+# Step 1: Verify and Create Consul Service First
+if [[ -d "$CONSUL_DIR" ]]; then
+    if [[ ! -f "$CONSUL_SERVICE_FILE" ]]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating systemd service for Consul..." | tee -a "$LOG_FILE"
+        cat <<EOF | sudo tee "$CONSUL_SERVICE_FILE" > /dev/null
+[Unit]
+Description=Consul Service
+After=network.target
+
+[Service]
+User=msuser
+Group=msgroup
+WorkingDirectory=$CONSUL_DIR
+ExecStart=/bin/bash -c '$CONSUL_DIR/startup.sh >> $CONSUL_DIR/consul.log 2>&1'
+ExecStop=/bin/bash -c 'pkill -f "$CONSUL_DIR/startup.sh"'
+Restart=on-failure
+Type=simple
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        sudo chmod 644 "$CONSUL_SERVICE_FILE"
+    fi
+
+    # Start Consul
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting Consul service..." | tee -a "$LOG_FILE"
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now consul &>>"$LOG_FILE"
+    sleep 10  # Allow time for Consul to initialize
+else
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - ERROR: Consul directory not found! Exiting." | tee -a "$LOG_FILE"
+    exit 1
+fi
 
 register_service() {
     local service=$1
@@ -64,16 +100,6 @@ EOF
         fi
     fi
 }
-
-# Step 1: Start Consul first
-if [[ -f "$CONSUL_DIR/startup.sh" ]]; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting Consul service..." | tee -a "$LOG_FILE"
-    sudo bash "$CONSUL_DIR/startup.sh" &>>"$LOG_FILE" &
-    sleep 10  # Wait for Consul to initialize
-else
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - ERROR: Consul startup script not found." | tee -a "$LOG_FILE"
-    exit 1
-fi
 
 # Step 2: Start MonitorService and wait 20 seconds
 if [[ -d "$BASE_DIR/MonitorService" ]]; then
