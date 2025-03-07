@@ -1,137 +1,101 @@
 #!/bin/bash
 
-BASE_DIR="/home/msuser/demo/microservices-demo"
-CONSUL_DIR="/home/msuser/products/consul"
-LOG_FILE="/home/msuser/demo/microservices-demo/microservice_registration.log"
+# Directories
+BASE_DIR="/apps/services"
+CONSUL_DIR="/products/consul"
+LOG_FILE="/apps/logs/microservice_registration.log"
 SYSTEMD_DIR="/etc/systemd/system"
-CONSUL_SERVICE_FILE="$SYSTEMD_DIR/consul.service"
 
-# Step 1: Verify and Create Consul Service First
-if [[ -d "$CONSUL_DIR" ]]; then
-    if [[ ! -f "$CONSUL_SERVICE_FILE" ]]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating systemd service for Consul..." | tee -a "$LOG_FILE"
-        cat <<EOF | sudo tee "$CONSUL_SERVICE_FILE" > /dev/null
-[Unit]
-Description=Consul Service
-After=network.target
+# Function to log messages
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
 
-[Service]
-User=msuser
-Group=msgroup
-WorkingDirectory=$CONSUL_DIR
-ExecStart=/bin/bash -c '$CONSUL_DIR/startup.sh >> $CONSUL_DIR/consul.log 2>&1'
-ExecStop=/bin/bash -c 'pkill -f "$CONSUL_DIR/startup.sh"'
-Restart=on-failure
-Type=simple
+# Function to check if a service is active
+is_service_active() {
+    systemctl is-active --quiet "$1"
+}
 
-[Install]
-WantedBy=multi-user.target
-EOF
-
-        sudo chmod 644 "$CONSUL_SERVICE_FILE"
-    fi
-
-    # Start Consul
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting Consul service..." | tee -a "$LOG_FILE"
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now consul &>>"$LOG_FILE"
-    sleep 10  # Allow time for Consul to initialize
-else
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - ERROR: Consul directory not found! Exiting." | tee -a "$LOG_FILE"
-    exit 1
-fi
-
+# Function to register a microservice
 register_service() {
-    local service=$1
-    local service_path="$BASE_DIR/$service"
-    local service_file="$SYSTEMD_DIR/$service.service"
+    local service_name="$1"
+    local service_path="$BASE_DIR/$service_name/1/start-service.sh"
+    local service_unit="$SYSTEMD_DIR/$service_name.service"
 
-    # Check if service directory exists
-    if [[ ! -d "$service_path" ]]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - Skipping $service: Directory not found." | tee -a "$LOG_FILE"
+    if [[ ! -f "$service_path" ]]; then
+        log_message "Service $service_name does not have start-service.sh, skipping..."
         return
     fi
 
-    # Check if start-service.sh exists
-    if [[ ! -f "$service_path/start-service.sh" ]]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - Skipping $service: start-service.sh not found." | tee -a "$LOG_FILE"
-        return
-    fi
-
-    # Create systemd service file if not exists
-    if [[ ! -f "$service_file" ]]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating systemd service file for: $service" | tee -a "$LOG_FILE"
-        cat <<EOF | sudo tee "$service_file" > /dev/null
+    if [[ -f "$service_unit" ]]; then
+        log_message "Service $service_name is already registered."
+    else
+        log_message "Registering $service_name..."
+        cat <<EOF >"$service_unit"
 [Unit]
-Description=Microservice $service
+Description=$service_name Service
 After=network.target consul.service
-EOF
 
-        cat <<EOF | sudo tee -a "$service_file" > /dev/null
 [Service]
-User=msuser
-Group=msgroup
-WorkingDirectory=$service_path
-ExecStart=/bin/bash -c 'exec java -jar target/$service-1.0-SNAPSHOT.jar >> $service.log 2>&1'
-ExecStop=/bin/bash -c 'pkill -f "java -jar target/$service-1.0-SNAPSHOT.jar"'
-Restart=on-failure
-Type=simple
+User=msgroup
+ExecStart=/bin/bash -c '$service_path >> /apps/logs/startup.log &'
+ExecStop=/bin/bash -c '$BASE_DIR/$service_name/1/stop-service.sh >> /apps/logs/shutdown.log &'
+Restart=always
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
 EOF
-
-        sudo chmod 644 "$service_file"
-    fi
-
-    # Reload systemd
-    sudo systemctl daemon-reload
-
-    # Enable and start the service
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Registering and starting microservice: $service" | tee -a "$LOG_FILE"
-    sudo systemctl enable --now "$service" &>>"$LOG_FILE"
-
-    # Check if service failed and retry once
-    if ! systemctl is-active "$service" &>/dev/null; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - ERROR: $service failed to start. Retrying..." | tee -a "$LOG_FILE"
-        sudo systemctl restart "$service" &>>"$LOG_FILE"
-        if ! systemctl is-active "$service" &>/dev/null; then
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - ERROR: $service failed again. Manual intervention required!" | tee -a "$LOG_FILE"
-        fi
+        systemctl daemon-reload
+        systemctl enable "$service_name"
     fi
 }
 
-# Step 2: Start MonitorService and wait 20 seconds
-if [[ -d "$BASE_DIR/MonitorService" ]]; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting MonitorService..." | tee -a "$LOG_FILE"
-    register_service "MonitorService"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Waiting for 20 seconds before starting AuthService..." | tee -a "$LOG_FILE"
-    sleep 20
-else
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Skipping MonitorService: Directory not found." | tee -a "$LOG_FILE"
-fi
+# Function to start a service with a timeout
+start_service_with_timeout() {
+    local service_name="$1"
+    local timeout="$2"
+    local elapsed=0
 
-# Step 3: Start AuthService and wait 30 seconds
-if [[ -d "$BASE_DIR/AuthService" ]]; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting AuthService..." | tee -a "$LOG_FILE"
-    register_service "AuthService"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Waiting for 30 seconds before starting remaining services..." | tee -a "$LOG_FILE"
-    sleep 30
-else
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Skipping AuthService: Directory not found." | tee -a "$LOG_FILE"
-fi
+    log_message "Starting $service_name..."
+    systemctl start "$service_name"
 
-# Step 4: Start remaining services in parallel
-for service_path in "$BASE_DIR"/*/; do
-    service=$(basename "$service_path")
+    while [[ $elapsed -lt $timeout ]]; do
+        if is_service_active "$service_name"; then
+            log_message "$service_name is up and running."
+            return 0
+        fi
+        sleep 5
+        ((elapsed+=5))
+    done
 
-    # Skip MonitorService and AuthService (Consul is already handled separately)
+    log_message "ERROR: $service_name did not start within $timeout seconds."
+    return 1
+}
+
+### STEP 1: Start Consul ###
+log_message "Starting Consul service..."
+systemctl start consul
+start_service_with_timeout "consul" 90 || log_message "ERROR: Consul failed to start."
+
+### STEP 2: Register and Start MonitorService ###
+log_message "Registering MonitorService..."
+register_service "MonitorService"
+start_service_with_timeout "MonitorService" 90 || log_message "Skipping MonitorService due to startup failure."
+
+### STEP 3: Register and Start AuthService ###
+log_message "Registering AuthService..."
+register_service "AuthService"
+start_service_with_timeout "AuthService" 30 || log_message "Skipping AuthService due to startup failure."
+
+### STEP 4: Register and Start Remaining Services in Parallel ###
+log_message "Registering and starting remaining services..."
+for service in $(ls "$BASE_DIR"); do
     if [[ "$service" != "MonitorService" && "$service" != "AuthService" ]]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting $service in parallel..." | tee -a "$LOG_FILE"
-        register_service "$service" &
+        register_service "$service"
+        systemctl start "$service" &
     fi
 done
+wait
+log_message "All services registered and started."
 
-wait  # Wait for all parallel services to complete
-
-echo "$(date '+%Y-%m-%d %H:%M:%S') - Microservice registration completed." | tee -a "$LOG_FILE"
