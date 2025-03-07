@@ -7,7 +7,7 @@ SYSTEMD_DIR="/etc/systemd/system"
 
 echo "$(date): Starting microservices registration..." > "$LOG_FILE"
 
-# Function to register a service if it's not already registered
+# Function to register a service if not already registered
 register_service() {
     local service_name=$1
     local service_file="$SYSTEMD_DIR/$service_name.service"
@@ -87,26 +87,30 @@ else
 fi
 
 # 2️⃣ Register & Start MonitorService (wait up to 90 sec)
-register_service "MonitorService"
-start_service "MonitorService"
-for i in {1..18}; do
-    if systemctl is-active --quiet MonitorService.service; then
-        echo "$(date): MonitorService is up." >> "$LOG_FILE"
-        break
-    fi
-    echo "$(date): Waiting for MonitorService to come up ($((i*5)) sec elapsed)..." >> "$LOG_FILE"
-    sleep 5
-done
+if [ -d "$BASE_DIR/MonitorService" ]; then
+    register_service "MonitorService"
+    start_service "MonitorService"
+    for i in {1..18}; do
+        if systemctl is-active --quiet MonitorService.service; then
+            echo "$(date): MonitorService is up." >> "$LOG_FILE"
+            break
+        fi
+        echo "$(date): Waiting for MonitorService to come up ($((i*5)) sec elapsed)..." >> "$LOG_FILE"
+        sleep 5
+    done
+fi
 
 # 3️⃣ Register & Start AuthService (wait 30 sec)
-register_service "AuthService"
-start_service "AuthService"
-sleep 30
+if [ -d "$BASE_DIR/AuthService" ]; then
+    register_service "AuthService"
+    start_service "AuthService"
+    sleep 30
+fi
 
 # 4️⃣ Register & Start Remaining Services in Parallel
 for service_dir in "$BASE_DIR"/*; do
     service_name=$(basename "$service_dir")
-    if [[ "$service_name" != "MonitorService" && "$service_name" != "AuthService" ]]; then
+    if [[ -d "$service_dir" && "$service_name" != "MonitorService" && "$service_name" != "AuthService" ]]; then
         register_service "$service_name"
         start_service "$service_name" &
     fi
