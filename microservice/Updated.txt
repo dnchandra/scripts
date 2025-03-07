@@ -1,44 +1,29 @@
 #!/bin/bash
 
-# Directories
 BASE_DIR="/apps/services"
 CONSUL_DIR="/products/consul"
 LOG_FILE="/apps/logs/microservice_registration.log"
 SYSTEMD_DIR="/etc/systemd/system"
 
-# Function to log messages
-log_message() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
-}
+echo "$(date): Starting microservices registration..." > "$LOG_FILE"
 
-# Function to check if a service is active
-is_service_active() {
-    systemctl is-active --quiet "$1"
-}
-
-# Function to register a microservice
+# Function to register a service if it's not already registered
 register_service() {
-    local service_name="$1"
-    local service_path="$BASE_DIR/$service_name/1/start-service.sh"
-    local service_unit="$SYSTEMD_DIR/$service_name.service"
+    local service_name=$1
+    local service_file="$SYSTEMD_DIR/$service_name.service"
 
-    if [[ ! -f "$service_path" ]]; then
-        log_message "Service $service_name does not have start-service.sh, skipping..."
-        return
-    fi
-
-    if [[ -f "$service_unit" ]]; then
-        log_message "Service $service_name is already registered."
+    if [ -f "$service_file" ]; then
+        echo "$(date): $service_name is already registered. Skipping." >> "$LOG_FILE"
     else
-        log_message "Registering $service_name..."
-        cat <<EOF >"$service_unit"
+        echo "$(date): Registering $service_name..." >> "$LOG_FILE"
+        cat <<EOF > "$service_file"
 [Unit]
 Description=$service_name Service
 After=network.target consul.service
 
 [Service]
 User=msgroup
-ExecStart=/bin/bash -c '$service_path >> /apps/logs/startup.log &'
+ExecStart=/bin/bash -c '$BASE_DIR/$service_name/1/start-service.sh >> /apps/logs/startup.log &'
 ExecStop=/bin/bash -c '$BASE_DIR/$service_name/1/stop-service.sh >> /apps/logs/shutdown.log &'
 Restart=always
 RestartSec=5s
@@ -46,56 +31,85 @@ RestartSec=5s
 [Install]
 WantedBy=multi-user.target
 EOF
+
         systemctl daemon-reload
-        systemctl enable "$service_name"
+        systemctl enable "$service_name.service"
+        echo "$(date): Registered $service_name successfully." >> "$LOG_FILE"
     fi
 }
 
-# Function to start a service with a timeout
-start_service_with_timeout() {
-    local service_name="$1"
-    local timeout="$2"
-    local elapsed=0
-
-    log_message "Starting $service_name..."
-    systemctl start "$service_name"
-
-    while [[ $elapsed -lt $timeout ]]; do
-        if is_service_active "$service_name"; then
-            log_message "$service_name is up and running."
-            return 0
-        fi
-        sleep 5
-        ((elapsed+=5))
-    done
-
-    log_message "ERROR: $service_name did not start within $timeout seconds."
-    return 1
+# Function to start a service if not already running
+start_service() {
+    local service_name=$1
+    if systemctl is-active --quiet "$service_name.service"; then
+        echo "$(date): $service_name is already running. Skipping start." >> "$LOG_FILE"
+    else
+        echo "$(date): Starting $service_name..." >> "$LOG_FILE"
+        systemctl start "$service_name.service"
+    fi
 }
 
-### STEP 1: Start Consul ###
-log_message "Starting Consul service..."
-systemctl start consul
-start_service_with_timeout "consul" 90 || log_message "ERROR: Consul failed to start."
+# 1️⃣ Register and Start Consul FIRST
+if [ -f "$CONSUL_DIR/startup.sh" ]; then
+    echo "$(date): Registering Consul service..." >> "$LOG_FILE"
+    cat <<EOF > "$SYSTEMD_DIR/consul.service"
+[Unit]
+Description=Consul Service
+After=network.target
 
-### STEP 2: Register and Start MonitorService ###
-log_message "Registering MonitorService..."
+[Service]
+User=msgroup
+ExecStart=/bin/bash -c '$CONSUL_DIR/startup.sh >> $CONSUL_DIR/consul.log 2>&1'
+ExecStop=/bin/bash -c '$CONSUL_DIR/stop.sh >> $CONSUL_DIR/consul.log 2>&1'
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable consul.service
+    systemctl start consul.service
+    echo "$(date): Consul service registered and started." >> "$LOG_FILE"
+
+    # Wait for Consul to be UP (max 90 sec)
+    for i in {1..18}; do
+        if systemctl is-active --quiet consul.service; then
+            echo "$(date): Consul is up." >> "$LOG_FILE"
+            break
+        fi
+        echo "$(date): Waiting for Consul to come up ($((i*5)) sec elapsed)..." >> "$LOG_FILE"
+        sleep 5
+    done
+else
+    echo "$(date): Consul not found! Skipping Consul startup." >> "$LOG_FILE"
+fi
+
+# 2️⃣ Register & Start MonitorService (wait up to 90 sec)
 register_service "MonitorService"
-start_service_with_timeout "MonitorService" 90 || log_message "Skipping MonitorService due to startup failure."
+start_service "MonitorService"
+for i in {1..18}; do
+    if systemctl is-active --quiet MonitorService.service; then
+        echo "$(date): MonitorService is up." >> "$LOG_FILE"
+        break
+    fi
+    echo "$(date): Waiting for MonitorService to come up ($((i*5)) sec elapsed)..." >> "$LOG_FILE"
+    sleep 5
+done
 
-### STEP 3: Register and Start AuthService ###
-log_message "Registering AuthService..."
+# 3️⃣ Register & Start AuthService (wait 30 sec)
 register_service "AuthService"
-start_service_with_timeout "AuthService" 30 || log_message "Skipping AuthService due to startup failure."
+start_service "AuthService"
+sleep 30
 
-### STEP 4: Register and Start Remaining Services in Parallel ###
-log_message "Registering and starting remaining services..."
-for service in $(ls "$BASE_DIR"); do
-    if [[ "$service" != "MonitorService" && "$service" != "AuthService" ]]; then
-        register_service "$service"
-        systemctl start "$service" &
+# 4️⃣ Register & Start Remaining Services in Parallel
+for service_dir in "$BASE_DIR"/*; do
+    service_name=$(basename "$service_dir")
+    if [[ "$service_name" != "MonitorService" && "$service_name" != "AuthService" ]]; then
+        register_service "$service_name"
+        start_service "$service_name" &
     fi
 done
-wait
-log_message "All services registered and started."
 
+echo "$(date): All services registered and started successfully!" >> "$LOG_FILE"
