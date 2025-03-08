@@ -5,7 +5,13 @@ CONSUL_DIR="/products/consul"
 LOG_FILE="/apps/logs/microservice_registration.log"
 SYSTEMD_DIR="/etc/systemd/system"
 
-echo "$(date): Starting microservices registration..." > "$LOG_FILE"
+# Function to log messages
+log_message() {
+    local message=$1
+    echo "$(date): $message" >> "$LOG_FILE"
+}
+
+log_message "Starting microservices registration..."
 
 # Function to register a service if not already registered
 register_service() {
@@ -13,20 +19,21 @@ register_service() {
     local service_file="$SYSTEMD_DIR/$service_name.service"
 
     if [ -f "$service_file" ]; then
-        echo "$(date): $service_name is already registered. Skipping." >> "$LOG_FILE"
+        log_message "$service_name is already registered. Skipping."
     else
-        echo "$(date): Registering $service_name..." >> "$LOG_FILE"
+        log_message "Registering $service_name..."
         cat <<EOF > "$service_file"
 [Unit]
 Description=$service_name Service
 After=network.target consul.service
+Requires=consul.service
 
 [Service]
 User=msgroup
-ExecStart=/bin/bash -c '$BASE_DIR/$service_name/1/start-service.sh >> /apps/logs/startup.log &'
-ExecStop=/bin/bash -c '$BASE_DIR/$service_name/1/stop-service.sh >> /apps/logs/shutdown.log &'
+ExecStart=/bin/bash -c "\$BASE_DIR/$service_name/1/start-service.sh >> /apps/logs/startup.log 2>&1"
+ExecStop=/bin/bash -c "\$BASE_DIR/$service_name/1/stop-service.sh >> /apps/logs/shutdown.log 2>&1"
 Restart=always
-RestartSec=5s
+RestartSec=30s
 
 [Install]
 WantedBy=multi-user.target
@@ -34,7 +41,7 @@ EOF
 
         systemctl daemon-reload
         systemctl enable "$service_name.service"
-        echo "$(date): Registered $service_name successfully." >> "$LOG_FILE"
+        log_message "Registered $service_name successfully."
     fi
 }
 
@@ -42,16 +49,37 @@ EOF
 start_service() {
     local service_name=$1
     if systemctl is-active --quiet "$service_name.service"; then
-        echo "$(date): $service_name is already running. Skipping start." >> "$LOG_FILE"
+        log_message "$service_name is already running. Skipping start."
     else
-        echo "$(date): Starting $service_name..." >> "$LOG_FILE"
+        log_message "Starting $service_name..."
         systemctl start "$service_name.service"
     fi
 }
 
+# Function to wait for a service with a timeout
+wait_for_service() {
+    local service_name=$1
+    local timeout=$2
+    local interval=5
+    local elapsed=0
+
+    while (( elapsed < timeout )); do
+        if systemctl is-active --quiet "$service_name.service"; then
+            log_message "$service_name is up."
+            return 0
+        fi
+        log_message "Waiting for $service_name to come up ($elapsed sec elapsed)..."
+        sleep $interval
+        (( elapsed += interval ))
+    done
+
+    log_message "Timeout reached: $service_name did not start in $timeout seconds."
+    return 1
+}
+
 # 1️⃣ Register and Start Consul FIRST
 if [ -f "$CONSUL_DIR/startup.sh" ]; then
-    echo "$(date): Registering Consul service..." >> "$LOG_FILE"
+    log_message "Registering Consul service..."
     cat <<EOF > "$SYSTEMD_DIR/consul.service"
 [Unit]
 Description=Consul Service
@@ -59,8 +87,8 @@ After=network.target
 
 [Service]
 User=msgroup
-ExecStart=/bin/bash -c '$CONSUL_DIR/startup.sh >> $CONSUL_DIR/consul.log 2>&1'
-ExecStop=/bin/bash -c '$CONSUL_DIR/stop.sh >> $CONSUL_DIR/consul.log 2>&1'
+ExecStart=/bin/bash -c "\$CONSUL_DIR/startup.sh >> \$CONSUL_DIR/consul.log 2>&1"
+ExecStop=/bin/bash -c "\$CONSUL_DIR/stop.sh >> \$CONSUL_DIR/consul.log 2>&1"
 Restart=on-failure
 RestartSec=5s
 
@@ -71,49 +99,43 @@ EOF
     systemctl daemon-reload
     systemctl enable consul.service
     systemctl start consul.service
-    echo "$(date): Consul service registered and started." >> "$LOG_FILE"
+    log_message "Consul service registered and started."
 
     # Wait for Consul to be UP (max 90 sec)
-    for i in {1..18}; do
-        if systemctl is-active --quiet consul.service; then
-            echo "$(date): Consul is up." >> "$LOG_FILE"
-            break
-        fi
-        echo "$(date): Waiting for Consul to come up ($((i*5)) sec elapsed)..." >> "$LOG_FILE"
-        sleep 5
-    done
+    wait_for_service "consul" 90
 else
-    echo "$(date): Consul not found! Skipping Consul startup." >> "$LOG_FILE"
+    log_message "Consul not found! Skipping Consul startup."
 fi
 
 # 2️⃣ Register & Start MonitorService (wait up to 90 sec)
 if [ -d "$BASE_DIR/MonitorService" ]; then
     register_service "MonitorService"
     start_service "MonitorService"
-    for i in {1..18}; do
-        if systemctl is-active --quiet MonitorService.service; then
-            echo "$(date): MonitorService is up." >> "$LOG_FILE"
-            break
-        fi
-        echo "$(date): Waiting for MonitorService to come up ($((i*5)) sec elapsed)..." >> "$LOG_FILE"
-        sleep 5
-    done
+    wait_for_service "MonitorService" 90
 fi
 
-# 3️⃣ Register & Start AuthService (wait 30 sec)
+# 3️⃣ Register & Start AuthService (wait up to 30 sec)
 if [ -d "$BASE_DIR/AuthService" ]; then
     register_service "AuthService"
     start_service "AuthService"
-    sleep 30
+    wait_for_service "AuthService" 30
 fi
 
 # 4️⃣ Register & Start Remaining Services in Parallel
+pids=()
 for service_dir in "$BASE_DIR"/*; do
     service_name=$(basename "$service_dir")
     if [[ -d "$service_dir" && "$service_name" != "MonitorService" && "$service_name" != "AuthService" ]]; then
         register_service "$service_name"
         start_service "$service_name" &
+        pids+=($!)
     fi
 done
 
-echo "$(date): All services registered and started successfully!" >> "$LOG_FILE"
+# Wait for all background processes to finish
+for pid in "${pids[@]}"; do
+    wait "$pid"
+done
+
+log_message "All services registered and started successfully!"
+]
