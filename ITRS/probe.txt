@@ -1,30 +1,59 @@
 import xml.etree.ElementTree as ET
-import openpyxl
 from openpyxl import Workbook
 
-# Load and parse XML
-tree = ET.parse('gateway.xml')
-root = tree.getroot()
+def strip_namespace(tag):
+    """Remove namespace from XML tag."""
+    return tag.split('}')[-1] if '}' in tag else tag
 
-# Create Excel workbook
-wb = Workbook()
-ws = wb.active
-ws.title = "Probes"
-ws.append(["Probe Group", "Probe Name", "Hostname"])
+# Load XML and strip namespaces
+def clean_xml_tree(xml_file):
+    events = "start", "start-ns"
+    ns_map = []
 
-# Navigate to <Probes> section
-probes_section = root.find(".//Probes")
-if probes_section is not None:
-    for group in probes_section.findall(".//probeGroup"):
-        group_name = group.attrib.get("name", "Unnamed Group")
-        for probe in group.findall("probe"):
+    for event, elem in ET.iterparse(xml_file, events):
+        if event == "start-ns":
+            ns_map.append(elem)
+
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    # Recursively strip namespaces
+    for elem in root.iter():
+        elem.tag = strip_namespace(elem.tag)
+
+    return tree, root
+
+# Extract probe data
+def extract_probes(root, output_excel):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Probes"
+    ws.append(["Probe Group", "Probe Name", "Hostname"])
+
+    probes_section = root.find("Probes")
+    if probes_section is None:
+        print("❌ No <Probes> section found in the XML.")
+        return
+
+    count = 0
+    for probe_group in probes_section.findall(".//probeGroup"):
+        group_name = probe_group.attrib.get("name", "Unnamed Group")
+
+        for probe in probe_group.findall("probe"):
             probe_name = probe.attrib.get("name", "Unnamed Probe")
             hostname_elem = probe.find("hostname")
-            hostname = hostname_elem.text if hostname_elem is not None else "N/A"
-            ws.append([group_name, probe_name, hostname])
-else:
-    print("No <Probes> section found in the XML.")
+            hostname = hostname_elem.text.strip() if hostname_elem is not None and hostname_elem.text else "N/A"
 
-# Save the Excel workbook
-wb.save("ITRS_configs.xlsx")
-print("Excel file 'ITRS_configs.xlsx' has been created.")
+            ws.append([group_name, probe_name, hostname])
+            count += 1
+
+    wb.save(output_excel)
+    print(f"✅ Excel file '{output_excel}' created with {count} probes.")
+
+# Run the parser
+if __name__ == "__main__":
+    input_file = "gateway.xml"
+    output_file = "ITRS_configs.xlsx"
+
+    tree, root = clean_xml_tree(input_file)
+    extract_probes(root, output_file)
