@@ -1,0 +1,63 @@
+import xml.etree.ElementTree as ET
+from openpyxl import Workbook
+
+def extract_entities_recursive(group_element, group_path, ws):
+    for child in group_element:
+        if child.tag == "managedEntityGroup":
+            group_name = child.attrib.get("name", "UnnamedGroup")
+            new_path = f"{group_path}/{group_name}" if group_path else group_name
+            extract_entities_recursive(child, new_path, ws)
+        elif child.tag == "managedEntity":
+            entity_name = child.attrib.get("name", "UnnamedEntity")
+            probe_elem = child.find("probe")
+            probe_ref = probe_elem.attrib.get("ref", "N/A") if probe_elem is not None else "N/A"
+
+            # Type Refs
+            type_refs = []
+            for type_elem in child.findall("type"):
+                if "ref" in type_elem.attrib:
+                    type_refs.append(type_elem.attrib["ref"])
+
+            add_types = child.find("addTypes")
+            if add_types is not None:
+                for type_elem in add_types.findall("type"):
+                    if "ref" in type_elem.attrib:
+                        type_refs.append(type_elem.attrib["ref"])
+
+            types_combined = ", ".join(type_refs) if type_refs else "None"
+
+            # Sampler Refs
+            sampler_refs = []
+            samplers = child.find("samplers")
+            if samplers is not None:
+                for sampler in samplers.findall("sampler"):
+                    if "ref" in sampler.attrib:
+                        sampler_refs.append(sampler.attrib["ref"])
+
+            sampler_combined = ", ".join(sampler_refs) if sampler_refs else "None"
+
+            # Append row
+            ws.append([group_path, entity_name, probe_ref, types_combined, sampler_combined])
+
+def extract_managed_entities(xml_file, output_excel):
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    managed_section = root.find("managedEntities")
+    if managed_section is None:
+        print("❌ No <managedEntities> section found.")
+        return
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "ManagedEntities"
+    ws.append(["Entity Group Path", "Managed Entity", "Probe Ref", "Type Refs", "Sampler Refs"])
+
+    extract_entities_recursive(managed_section, "", ws)
+
+    wb.save(output_excel)
+    print(f"✅ Output written to '{output_excel}'.")
+
+# Run
+if __name__ == "__main__":
+    extract_managed_entities("gateway.xml", "ITRS_Entities.xlsx")
