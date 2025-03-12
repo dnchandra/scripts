@@ -1,0 +1,30 @@
+import xml.etree.ElementTree as ET
+import openpyxl
+from openpyxl import Workbook
+
+# Load and parse XML
+tree = ET.parse('gateway.xml')
+root = tree.getroot()
+
+# Create Excel workbook
+wb = Workbook()
+ws = wb.active
+ws.title = "Probes"
+ws.append(["Probe Group", "Probe Name", "Hostname"])
+
+# Navigate to <Probes> section
+probes_section = root.find(".//Probes")
+if probes_section is not None:
+    for group in probes_section.findall(".//probeGroup"):
+        group_name = group.attrib.get("name", "Unnamed Group")
+        for probe in group.findall("probe"):
+            probe_name = probe.attrib.get("name", "Unnamed Probe")
+            hostname_elem = probe.find("hostname")
+            hostname = hostname_elem.text if hostname_elem is not None else "N/A"
+            ws.append([group_name, probe_name, hostname])
+else:
+    print("No <Probes> section found in the XML.")
+
+# Save the Excel workbook
+wb.save("ITRS_configs.xlsx")
+print("Excel file 'ITRS_configs.xlsx' has been created.")
