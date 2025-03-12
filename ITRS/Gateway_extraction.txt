@@ -1,0 +1,106 @@
+import os
+import xml.etree.ElementTree as ET
+from openpyxl import Workbook
+
+# Paths
+GATEWAY_CONFIG = 'gateway.xml'  # Update this path if needed
+OUTPUT_XLSX = 'geneos_alerts_summary.xlsx'
+
+def parse_with_includes(file_path, parsed_files=None):
+    if parsed_files is None:
+        parsed_files = set()
+    if file_path in parsed_files:
+        return None
+    parsed_files.add(file_path)
+
+    try:
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+
+        for include in root.findall(".//include"):
+            include_path = include.text.strip()
+            include_file = os.path.join(os.path.dirname(file_path), include_path)
+            if os.path.isfile(include_file):
+                include_root = parse_with_includes(include_file, parsed_files)
+                if include_root is not None:
+                    for child in include_root:
+                        root.append(child)
+                root.remove(include)
+        return root
+    except ET.ParseError as e:
+        print(f"Error parsing {file_path}: {e}")
+        return None
+
+def extract_data(root):
+    samplers = {}
+    for sampler in root.findall(".//sampler"):
+        name = sampler.get("name")
+        sampler_type = sampler.get("type", "Unknown")
+        variables = {}
+        for var in sampler.findall(".//var"):
+            variables[var.get("name")] = var.get("value")
+        samplers[name] = {"type": sampler_type, "variables": variables}
+
+    entities = {}
+    for entity in root.findall(".//entity"):
+        entity_name = entity.get("name")
+        sampler_refs = [sref.get("ref") for sref in entity.findall(".//samplerRef")]
+        entities[entity_name] = sampler_refs
+
+    rules = []
+    for rule in root.findall(".//rule"):
+        rule_name = rule.get("name", "")
+        condition = rule.findtext("condition", default="").strip()
+        severity = rule.findtext("severity", default="").strip()
+        variable = rule.findtext("variable", default="").strip()
+        rules.append({
+            "name": rule_name,
+            "condition": condition,
+            "severity": severity,
+            "variable": variable
+        })
+
+    return entities, samplers, rules
+
+def write_excel(entities, samplers, rules, output_file):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Geneos Alerts"
+    ws.append(['Entity', 'Sampler Type', 'Rule/Pattern', 'Severity', 'Variables'])
+
+    for entity, sampler_refs in entities.items():
+        for sampler_name in sampler_refs:
+            sampler = samplers.get(sampler_name, {})
+            sampler_type = sampler.get("type", "Unknown")
+            variable_str = "; ".join(f"{k}={v}" for k, v in sampler.get("variables", {}).items())
+
+            matched = False
+            for rule in rules:
+                if not rule["variable"] or rule["variable"] in sampler.get("variables", {}):
+                    ws.append([
+                        entity,
+                        sampler_type,
+                        rule["condition"] or rule["name"],
+                        rule["severity"],
+                        variable_str
+                    ])
+                    matched = True
+            if not matched:
+                ws.append([
+                    entity,
+                    sampler_type,
+                    "No rule matched",
+                    "",
+                    variable_str
+                ])
+    wb.save(output_file)
+    print(f"Excel output written to: {output_file}")
+
+# Main
+if __name__ == "__main__":
+    root = parse_with_includes(GATEWAY_CONFIG)
+    if root is not None:
+        entities, samplers, rules = extract_data(root)
+        write_excel(entities, samplers, rules, OUTPUT_XLSX)
+    else:
+        print("Failed to parse gateway configuration.")
