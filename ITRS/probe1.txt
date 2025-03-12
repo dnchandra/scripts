@@ -1,0 +1,39 @@
+import xml.etree.ElementTree as ET
+from openpyxl import Workbook
+
+def extract_nested_probes(xml_file, output_excel):
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    probes_section = root.find("probes")
+    if probes_section is None:
+        print("❌ No <probes> section found in the XML.")
+        return
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Probes"
+    ws.append(["Group Level 1", "Group Level 2", "Probe Name", "Hostname"])
+
+    def parse_group(group_elem, level1=None, level2=None):
+        for child in group_elem:
+            if child.tag == "probeGroup":
+                group_name = child.attrib.get("name", "UnnamedGroup")
+                if level1 is None:
+                    parse_group(child, group_name, None)
+                else:
+                    parse_group(child, level1, group_name)
+            elif child.tag == "probe":
+                probe_name = child.attrib.get("name", "UnnamedProbe")
+                hostname_elem = child.find("hostname")
+                hostname = hostname_elem.text.strip() if hostname_elem is not None and hostname_elem.text else "N/A"
+                ws.append([level1, level2, probe_name, hostname])
+
+    parse_group(probes_section)
+
+    wb.save(output_excel)
+    print(f"✅ Excel file '{output_excel}' created.")
+
+# Run it
+if __name__ == "__main__":
+    extract_nested_probes("gateway.xml", "ITRS_configs.xlsx")
