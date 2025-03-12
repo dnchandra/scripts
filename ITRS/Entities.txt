@@ -1,0 +1,46 @@
+import xml.etree.ElementTree as ET
+from openpyxl import Workbook
+
+def extract_managed_entities(xml_file, output_excel):
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    managed_section = root.find("managedEntities")
+    if managed_section is None:
+        print("❌ No <managedEntities> section found.")
+        return
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "ManagedEntities"
+    ws.append(["Entity Group", "Managed Entity", "Probe Ref", "Sampler Refs"])
+
+    for entity_group in managed_section.findall("entityGroup"):
+        group_name = entity_group.attrib.get("name", "UnnamedGroup")
+
+        for entity in entity_group.findall("managedEntity"):
+            entity_name = entity.attrib.get("name", "UnnamedEntity")
+
+            # Probe ref
+            probe_elem = entity.find("probe")
+            probe_ref = probe_elem.attrib.get("ref", "N/A") if probe_elem is not None else "N/A"
+
+            # Sampler refs
+            sampler_refs = []
+            sampler_section = entity.find("samplerRefs")
+            if sampler_section is not None:
+                for sampler in sampler_section.findall("sampler"):
+                    ref = sampler.attrib.get("ref")
+                    if ref:
+                        sampler_refs.append(ref)
+
+            sampler_list = ", ".join(sampler_refs) if sampler_refs else "None"
+
+            ws.append([group_name, entity_name, probe_ref, sampler_list])
+
+    wb.save(output_excel)
+    print(f"✅ Managed Entities written to '{output_excel}'.")
+
+# Run it
+if __name__ == "__main__":
+    extract_managed_entities("gateway.xml", "ITRS_Entities.xlsx")
