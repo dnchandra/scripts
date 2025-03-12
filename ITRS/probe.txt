@@ -1,39 +1,20 @@
 import xml.etree.ElementTree as ET
 from openpyxl import Workbook
 
-def strip_namespace(tag):
-    """Remove namespace from XML tag."""
-    return tag.split('}')[-1] if '}' in tag else tag
-
-# Load XML and strip namespaces
-def clean_xml_tree(xml_file):
-    events = "start", "start-ns"
-    ns_map = []
-
-    for event, elem in ET.iterparse(xml_file, events):
-        if event == "start-ns":
-            ns_map.append(elem)
-
+def extract_probes_from_xml(xml_file, output_excel):
     tree = ET.parse(xml_file)
     root = tree.getroot()
 
-    # Recursively strip namespaces
-    for elem in root.iter():
-        elem.tag = strip_namespace(elem.tag)
+    # Find the <probes> section
+    probes_section = root.find("probes")
+    if probes_section is None:
+        print("❌ No <probes> section found in the XML.")
+        return
 
-    return tree, root
-
-# Extract probe data
-def extract_probes(root, output_excel):
     wb = Workbook()
     ws = wb.active
     ws.title = "Probes"
     ws.append(["Probe Group", "Probe Name", "Hostname"])
-
-    probes_section = root.find("Probes")
-    if probes_section is None:
-        print("❌ No <Probes> section found in the XML.")
-        return
 
     count = 0
     for probe_group in probes_section.findall(".//probeGroup"):
@@ -47,13 +28,12 @@ def extract_probes(root, output_excel):
             ws.append([group_name, probe_name, hostname])
             count += 1
 
-    wb.save(output_excel)
-    print(f"✅ Excel file '{output_excel}' created with {count} probes.")
+    if count > 0:
+        wb.save(output_excel)
+        print(f"✅ Excel file '{output_excel}' created with {count} probes.")
+    else:
+        print("⚠️ No probes found under <probes>.")
 
-# Run the parser
+# Run the script
 if __name__ == "__main__":
-    input_file = "gateway.xml"
-    output_file = "ITRS_configs.xlsx"
-
-    tree, root = clean_xml_tree(input_file)
-    extract_probes(root, output_file)
+    extract_probes_from_xml("gateway.xml", "ITRS_configs.xlsx")
