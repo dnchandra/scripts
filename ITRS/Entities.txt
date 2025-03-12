@@ -1,6 +1,31 @@
 import xml.etree.ElementTree as ET
 from openpyxl import Workbook
 
+def extract_entities_recursive(group_element, group_path, ws):
+    for child in group_element:
+        if child.tag == "managedEntityGroup":
+            group_name = child.attrib.get("name", "UnnamedGroup")
+            new_path = f"{group_path}/{group_name}" if group_path else group_name
+            extract_entities_recursive(child, new_path, ws)
+        elif child.tag == "managedEntity":
+            entity_name = child.attrib.get("name", "UnnamedEntity")
+            probe_elem = child.find("probe")
+            probe_ref = probe_elem.attrib.get("ref", "N/A") if probe_elem is not None else "N/A"
+
+            type_refs = [t.attrib.get("ref") for t in child.findall("type")]
+            type_refs += [t.attrib.get("ref") for t in child.find("addTypes").findall("type")] if child.find("addTypes") is not None else []
+            types_combined = ", ".join(filter(None, type_refs)) or "None"
+
+            sampler_refs = []
+            samplers = child.find("samplers")
+            if samplers is not None:
+                for sampler in samplers.findall("sampler"):
+                    sampler_refs.append(sampler.attrib.get("ref", "N/A"))
+
+            sampler_combined = ", ".join(sampler_refs) if sampler_refs else "None"
+
+            ws.append([group_path, entity_name, probe_ref, types_combined, sampler_combined])
+
 def extract_managed_entities(xml_file, output_excel):
     tree = ET.parse(xml_file)
     root = tree.getroot()
@@ -13,34 +38,13 @@ def extract_managed_entities(xml_file, output_excel):
     wb = Workbook()
     ws = wb.active
     ws.title = "ManagedEntities"
-    ws.append(["Entity Group", "Managed Entity", "Probe Ref", "Sampler Refs"])
+    ws.append(["Entity Group Path", "Managed Entity", "Probe Ref", "Type Refs", "Sampler Refs"])
 
-    for entity_group in managed_section.findall("entityGroup"):
-        group_name = entity_group.attrib.get("name", "UnnamedGroup")
-
-        for entity in entity_group.findall("managedEntity"):
-            entity_name = entity.attrib.get("name", "UnnamedEntity")
-
-            # Probe ref
-            probe_elem = entity.find("probe")
-            probe_ref = probe_elem.attrib.get("ref", "N/A") if probe_elem is not None else "N/A"
-
-            # Sampler refs
-            sampler_refs = []
-            sampler_section = entity.find("samplerRefs")
-            if sampler_section is not None:
-                for sampler in sampler_section.findall("sampler"):
-                    ref = sampler.attrib.get("ref")
-                    if ref:
-                        sampler_refs.append(ref)
-
-            sampler_list = ", ".join(sampler_refs) if sampler_refs else "None"
-
-            ws.append([group_name, entity_name, probe_ref, sampler_list])
+    extract_entities_recursive(managed_section, "", ws)
 
     wb.save(output_excel)
-    print(f"✅ Managed Entities written to '{output_excel}'.")
+    print(f"✅ Output written to '{output_excel}'.")
 
-# Run it
+# Run the function
 if __name__ == "__main__":
     extract_managed_entities("gateway.xml", "ITRS_Entities.xlsx")
