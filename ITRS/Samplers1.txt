@@ -1,0 +1,85 @@
+import os
+import xml.etree.ElementTree as ET
+import pandas as pd
+
+def extract_from_data(process_elem, tag_name):
+    data_block = process_elem.find("data")
+    if data_block is not None:
+        sub_tag = data_block.find(tag_name)
+        if sub_tag is not None:
+            data = sub_tag.find("data")
+            return data.text.strip() if data is not None and data.text else ""
+    return ""
+
+def extract_search_string(process_elem):
+    data_block = process_elem.find("data")
+    if data_block is not None:
+        id_block = data_block.find("ID")
+        if id_block is not None:
+            search_string = id_block.find("searchString")
+            if search_string is not None:
+                data = search_string.find("data")
+                return data.text.strip() if data is not None and data.text else ""
+    return ""
+
+def extract_simple_tag(sampler_elem, tag_name):
+    tag = sampler_elem.find(tag_name)
+    if tag is not None:
+        data = tag.find("data")
+        return data.text.strip() if data is not None and data.text else ""
+    return ""
+
+def parse_samplers_from_xml(xml_path):
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        samplers = []
+
+        for sg in root.iter():
+            if 'samplergroup' in sg.tag.lower():
+                group_name = sg.attrib.get('name', '')
+                for sampler in sg.findall(".//sampler"):
+                    sampler_name = sampler.attrib.get('name', '')
+                    sampler_script = extract_simple_tag(sampler, 'samplerScript')
+                    log_file = extract_simple_tag(sampler, 'logFile')
+
+                    for process in sampler.findall(".//plugin//processes//process"):
+                        alias = extract_from_data(process, 'alias')
+                        search_string = extract_search_string(process)
+                        start = extract_from_data(process, 'start')
+                        stop = extract_from_data(process, 'stop')
+
+                        samplers.append({
+                            "Sampler Group": group_name,
+                            "Sampler Name": sampler_name,
+                            "Alias": alias,
+                            "Search String": search_string,
+                            "Start Command": start,
+                            "Stop Command": stop,
+                            "SamplerScript": sampler_script,
+                            "logFile": log_file
+                        })
+        return samplers
+    except Exception as e:
+        print(f"❌ Error parsing {xml_path}: {e}")
+        return []
+
+def process_all_xmls_to_excel(output_excel="ITRS_Samplers.xlsx"):
+    writer = pd.ExcelWriter(output_excel, engine='xlsxwriter')
+
+    for file in os.listdir('.'):
+        if file.endswith(".xml"):
+            data = parse_samplers_from_xml(file)
+            if data:
+                df = pd.DataFrame(data)
+                sheet_name = os.path.splitext(file)[0][:31]
+                df.to_excel(writer, index=False, sheet_name=sheet_name)
+                print(f"✅ Processed: {file}")
+            else:
+                print(f"⚠️ No sampler data in: {file}")
+
+    writer.close()
+    print(f"\n📘 All sampler data saved to: {output_excel}")
+
+# Run the script
+process_all_xmls_to_excel()
