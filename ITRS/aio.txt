@@ -2,127 +2,108 @@ import os
 import xml.etree.ElementTree as ET
 import pandas as pd
 
-def parse_probes(root):
-    results = []
-    probes_root = root.find("Probes") or root.find("probes")
+def get_all_xml_files():
+    return [f for f in os.listdir('.') if f.endswith('.xml')]
 
-    def recurse(group, path=""):
-        name = group.attrib.get("name", "")
-        current_path = f"{path}/{name}" if path else name
+def extract_probes(root):
+    probes = []
 
-        for child in group:
-            if child.tag == "probeGroup":
-                recurse(child, current_path)
-            elif child.tag == "probe":
-                results.append({
-                    "Group Path": current_path,
-                    "Probe Name": child.attrib.get("name", ""),
-                    "Hostname": child.findtext("hostname", "")
+    def recurse_groups(element, path):
+        for child in element:
+            if child.tag.lower() == 'probegroup':
+                name = child.attrib.get('name', 'UnnamedGroup')
+                new_path = path + [name]
+                recurse_groups(child, new_path)
+            elif child.tag.lower() == 'probe':
+                probe_name = child.attrib.get('name', 'UnnamedProbe')
+                hostname = child.findtext('hostname', default='N/A')
+                probes.append({
+                    'Group Path': ' > '.join(path),
+                    'Probe Name': probe_name,
+                    'Hostname': hostname
                 })
 
+    probes_root = root.find('.//Probes') or root.find('.//probes')
     if probes_root is not None:
-        for group in probes_root.findall("probeGroup"):
-            recurse(group)
+        recurse_groups(probes_root, [])
+    return pd.DataFrame(probes)
 
-    return pd.DataFrame(results)
+def extract_entities(root):
+    entities = []
 
+    def recurse_entity_groups(element, path):
+        for child in element:
+            if child.tag.lower() == 'managedentitygroup':
+                name = child.attrib.get('name', 'UnnamedGroup')
+                recurse_entity_groups(child, path + [name])
+            elif child.tag.lower() == 'managedentity':
+                entity_name = child.attrib.get('name', 'UnnamedEntity')
+                probe_ref = child.attrib.get('probe', '')
+                type_ref = child.attrib.get('type', '')
+                sampler_refs = []
+                for sampler in child.findall('.//samplerRef'):
+                    sampler_refs.append(sampler.attrib.get('name', ''))
+                entities.append({
+                    'Group Path': ' > '.join(path),
+                    'Entity Name': entity_name,
+                    'Probe Ref': probe_ref,
+                    'Type Ref': type_ref,
+                    'Sampler Refs': ', '.join(sampler_refs)
+                })
 
-def parse_entities(root):
-    results = []
-    entities_root = root.find("ManagedEntities") or root.find("managedEntities")
-
-    def recurse(group, path=""):
-        group_name = group.attrib.get("name", "")
-        current_path = f"{path}/{group_name}" if path else group_name
-
-        for child in group:
-            if child.tag == "managedEntityGroup":
-                recurse(child, current_path)
-            elif child.tag == "managedEntity":
-                entity = {
-                    "Group Path": current_path,
-                    "Entity Name": child.attrib.get("name", ""),
-                    "Probe Ref": child.attrib.get("probe", ""),
-                    "Type Refs": ", ".join(t.attrib.get("ref", "") for t in child.findall("type")),
-                    "Sampler Refs": ", ".join(s.attrib.get("ref", "") for s in child.findall("sampler"))
-                }
-                results.append(entity)
-
+    entities_root = root.find('.//ManagedEntities') or root.find('.//managedEntities')
     if entities_root is not None:
-        for group in entities_root.findall("managedEntityGroup"):
-            recurse(group)
+        recurse_entity_groups(entities_root, [])
+    return pd.DataFrame(entities)
 
-    return pd.DataFrame(results)
+def extract_samplers(root):
+    samplers = []
 
+    def parse_sampler_group(group_element):
+        group_name = group_element.attrib.get('name', 'UnnamedGroup')
+        for sampler in group_element.findall('sampler'):
+            entry = {'Group Name': group_name}
+            entry['Sampler Name'] = sampler.attrib.get('name', 'UnnamedSampler')
+            for sub_elem in sampler:
+                tag = sub_elem.tag
+                text = sub_elem.text.strip() if sub_elem.text else ''
+                entry[tag] = text
+            samplers.append(entry)
 
-def extract_all_tags(tag):
-    data = {}
-    for elem in tag.iter():
-        tag_name = elem.tag
-        if elem.text and elem.text.strip():
-            val = elem.text.strip()
-            if tag_name in data:
-                data[tag_name] += "; " + val
-            else:
-                data[tag_name] = val
-    return data
+    samplers_root = root.find('.//samplers')
+    if samplers_root is not None:
+        for group in samplers_root.findall('samplerGroup'):
+            parse_sampler_group(group)
+    return pd.DataFrame(samplers)
 
+def main():
+    all_files = get_all_xml_files()
+    writer = pd.ExcelWriter('ITRS_Config_Full.xlsx', engine='xlsxwriter')
 
-def parse_samplers(root):
-    results = []
-    samplers_root = root.find("Samplers") or root.find("samplers")
-    if samplers_root is None:
-        return pd.DataFrame()
+    for file in all_files:
+        try:
+            tree = ET.parse(file)
+            root = tree.getroot()
 
-    for sampler_group in samplers_root.findall("samplerGroup"):
-        group_name = sampler_group.attrib.get("name", "")
-        for sampler in sampler_group.findall("sampler"):
-            entry = {
-                "Sampler Group": group_name,
-                "Sampler Name": sampler.attrib.get("name", "")
-            }
-            plugin = sampler.find("plugin")
-            if plugin is not None:
-                entry.update(extract_all_tags(plugin))
-            results.append(entry)
+            probes_df = extract_probes(root)
+            entities_df = extract_entities(root)
+            samplers_df = extract_samplers(root)
 
-    return pd.DataFrame(results)
+            base_name = os.path.splitext(os.path.basename(file))[0]
+            if not probes_df.empty:
+                probes_df.to_excel(writer, sheet_name=f'{base_name}_Probes', index=False)
+            if not entities_df.empty:
+                entities_df.to_excel(writer, sheet_name=f'{base_name}_Entities', index=False)
+            if not samplers_df.empty:
+                samplers_df.to_excel(writer, sheet_name=f'{base_name}_Samplers', index=False)
 
+            print(f"✅ Processed {file}")
 
-# Output file in current working directory
-output_file = os.path.join(os.getcwd(), "ITRS_Config_Full.xlsx")
-writer = pd.ExcelWriter(output_file, engine='openpyxl')
+        except Exception as e:
+            print(f"❌ Error processing {file}: {e}")
 
-data_written = False
+    writer.close()
+    print("\n📁 Output saved to: ITRS_Config_Full.xlsx")
 
-# Parse all .xml files in current directory
-for xml_file in os.listdir():
-    if not xml_file.endswith(".xml"):
-        continue
-
-    try:
-        tree = ET.parse(xml_file)
-        root = tree.getroot()
-        base = os.path.splitext(xml_file)[0]
-
-        df_probes = parse_probes(root)
-        df_entities = parse_entities(root)
-        df_samplers = parse_samplers(root)
-
-        if not df_probes.empty:
-            df_probes.to_excel(writer, sheet_name=f"{base}_Probes", index=False)
-            data_written = True
-        if not df_entities.empty:
-            df_entities.to_excel(writer, sheet_name=f"{base}_Entities", index=False)
-            data_written = True
-        if not df_samplers.empty:
-            df_samplers.to_excel(writer, sheet_name=f"{base}_Samplers", index=False)
-            data_written = True
-    except Exception as e:
-        print(f"Error parsing {xml_file}: {e}")
-
-if not data_written:
-    pd.DataFrame({"Message": ["No valid data found in any XML file"]}).to_excel(writer, sheet_name="Info", index=False)
-
-writer.close()
-output_file
+if __name__ == "__main__":
+    main()
