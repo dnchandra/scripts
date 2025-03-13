@@ -1,12 +1,28 @@
 import xml.etree.ElementTree as ET
 import pandas as pd
 
-def extract_text(elem, tag_name):
-    tag = elem.find(tag_name)
-    if tag is not None:
-        data = tag.find('data')
-        return data.text.strip() if data is not None and data.text else ''
-    return ''
+def extract_from_data(process_elem, tag_name):
+    """
+    Looks for a child tag (like alias, start, stop) under <data> block inside <process>.
+    """
+    data_block = process_elem.find("data")
+    if data_block is not None:
+        sub_tag = data_block.find(tag_name)
+        if sub_tag is not None:
+            data = sub_tag.find("data")
+            return data.text.strip() if data is not None and data.text else ""
+    return ""
+
+def extract_search_string(process_elem):
+    data_block = process_elem.find("data")
+    if data_block is not None:
+        id_block = data_block.find("ID")
+        if id_block is not None:
+            search_string = id_block.find("searchString")
+            if search_string is not None:
+                data = search_string.find("data")
+                return data.text.strip() if data is not None and data.text else ""
+    return ""
 
 def parse_samplers(xml_file):
     tree = ET.parse(xml_file)
@@ -18,13 +34,11 @@ def parse_samplers(xml_file):
             group_name = sg.attrib.get('name', '')
             for sampler in sg.findall(".//sampler"):
                 sampler_name = sampler.attrib.get('name', '')
-
-                # loop through all <process> elements inside plugins
                 for process in sampler.findall(".//plugin//processes//process"):
-                    alias = extract_text(process, 'alias')
-                    search_string = extract_text(process, 'ID/searchString')
-                    start = extract_text(process, 'start')
-                    stop = extract_text(process, 'stop')
+                    alias = extract_from_data(process, 'alias')
+                    search_string = extract_search_string(process)
+                    start = extract_from_data(process, 'start')
+                    stop = extract_from_data(process, 'stop')
 
                     samplers.append({
                         "Sampler Group": group_name,
@@ -34,7 +48,6 @@ def parse_samplers(xml_file):
                         "Start Command": start,
                         "Stop Command": stop
                     })
-
     return samplers
 
 def write_to_excel(xml_file, output_file):
