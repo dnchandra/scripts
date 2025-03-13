@@ -1,0 +1,60 @@
+import os
+import xml.etree.ElementTree as ET
+import pandas as pd
+
+# Output Excel file
+output_excel = "ITRS_Samplers.xlsx"
+writer = pd.ExcelWriter(output_excel, engine='openpyxl')
+
+# Helper: Extract all nested data from a sampler section
+def extract_nested_data(elem, path=""):
+    data = {}
+    for child in elem:
+        tag_path = f"{path}/{child.tag}" if path else child.tag
+        if list(child):  # Has children
+            data.update(extract_nested_data(child, tag_path))
+        else:
+            data[tag_path] = child.text
+    return data
+
+# Scan all XML files in the current directory
+for filename in os.listdir("."):
+    if filename.endswith(".xml"):
+        try:
+            tree = ET.parse(filename)
+            root = tree.getroot()
+
+            samplers_data = []
+
+            for sampler_group in root.findall(".//samplerGroup"):
+                group_name = sampler_group.attrib.get("name", "")
+                for sampler in sampler_group.findall("sampler"):
+                    sampler_name = sampler.attrib.get("name", "")
+                    sampler_info = {
+                        "Sampler Group": group_name,
+                        "Sampler Name": sampler_name
+                    }
+
+                    # Extract all dynamic tags inside this sampler
+                    nested_data = extract_nested_data(sampler)
+                    sampler_info.update(nested_data)
+
+                    samplers_data.append(sampler_info)
+
+            if samplers_data:
+                df = pd.DataFrame(samplers_data)
+                sheet_name = os.path.splitext(filename)[0][:31]
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+                print(f"✅ Processed: {filename} -> {len(df)} rows")
+            else:
+                print(f"⚠️ No samplers found in {filename}")
+
+        except Exception as e:
+            print(f"❌ Failed to parse {filename}: {e}")
+
+# Save only if data exists
+if writer.sheets:
+    writer.close()
+    print(f"\n✅ All data written to {output_excel}")
+else:
+    print("\n❌ No sampler data found in any XML file. Excel not created.")
