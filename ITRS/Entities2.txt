@@ -1,63 +1,57 @@
 import xml.etree.ElementTree as ET
-from openpyxl import Workbook
+import pandas as pd
 
-def extract_entities_recursive(group_element, group_path, ws):
-    for child in group_element:
-        if child.tag == "managedEntityGroup":
-            group_name = child.attrib.get("name", "UnnamedGroup")
-            new_path = f"{group_path}/{group_name}" if group_path else group_name
-            extract_entities_recursive(child, new_path, ws)
-        elif child.tag == "managedEntity":
-            entity_name = child.attrib.get("name", "UnnamedEntity")
-            probe_elem = child.find("probe")
-            probe_ref = probe_elem.attrib.get("ref", "N/A") if probe_elem is not None else "N/A"
+# Load the XML file
+tree = ET.parse("gateway.xml")
+root = tree.getroot()
 
-            # Type Refs
-            type_refs = []
-            for type_elem in child.findall("type"):
-                if "ref" in type_elem.attrib:
-                    type_refs.append(type_elem.attrib["ref"])
+# Namespace handling
+def strip_namespace(tag):
+    return tag.split('}', 1)[-1] if '}' in tag else tag
 
-            add_types = child.find("addTypes")
-            if add_types is not None:
-                for type_elem in add_types.findall("type"):
-                    if "ref" in type_elem.attrib:
-                        type_refs.append(type_elem.attrib["ref"])
+# Recursive function to handle nested managedEntityGroups
+def process_entity_group(elem, group_path, results):
+    for child in elem:
+        tag = strip_namespace(child.tag)
+        if tag == "managedEntityGroup":
+            name = child.attrib.get("name", "")
+            new_group_path = f"{group_path}/{name}" if group_path else name
+            process_entity_group(child, new_group_path, results)
+        elif tag == "managedEntity":
+            row = {
+                "Group Path": group_path,
+                "Entity Name": child.attrib.get("name", "")
+            }
 
-            types_combined = ", ".join(type_refs) if type_refs else "None"
+            # Get attributes
+            for attr in child.findall("./attribute"):
+                attr_name = attr.attrib.get("name")
+                attr_value = attr.text
+                row[attr_name] = attr_value
 
-            # Sampler Refs
-            sampler_refs = []
-            samplers = child.find("samplers")
-            if samplers is not None:
-                for sampler in samplers.findall("sampler"):
-                    if "ref" in sampler.attrib:
-                        sampler_refs.append(sampler.attrib["ref"])
+            # Get type refs
+            type_refs = [t.attrib.get("ref") for t in child.findall(".//type") if t.attrib.get("ref")]
+            row["Type Refs"] = ", ".join(type_refs)
 
-            sampler_combined = ", ".join(sampler_refs) if sampler_refs else "None"
+            # Get sampler refs
+            sampler_refs = [s.attrib.get("ref") for s in child.findall(".//sampler") if s.attrib.get("ref")]
+            row["Sampler Refs"] = ", ".join(sampler_refs)
 
-            # Append row
-            ws.append([group_path, entity_name, probe_ref, types_combined, sampler_combined])
+            # Get probe refs
+            probe_refs = [p.attrib.get("ref") for p in child.findall(".//probe") if p.attrib.get("ref")]
+            row["Probe Refs"] = ", ".join(probe_refs)
 
-def extract_managed_entities(xml_file, output_excel):
-    tree = ET.parse(xml_file)
-    root = tree.getroot()
+            results.append(row)
 
-    managed_section = root.find("managedEntities")
-    if managed_section is None:
-        print("❌ No <managedEntities> section found.")
-        return
+# Start processing
+results = []
+managed_entities = root.find("managedEntities")
+if managed_entities is not None:
+    process_entity_group(managed_entities, "", results)
+else:
+    print("No <managedEntities> section found!")
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "ManagedEntities"
-    ws.append(["Entity Group Path", "Managed Entity", "Probe Ref", "Type Refs", "Sampler Refs"])
-
-    extract_entities_recursive(managed_section, "", ws)
-
-    wb.save(output_excel)
-    print(f"✅ Output written to '{output_excel}'.")
-
-# Run
-if __name__ == "__main__":
-    extract_managed_entities("gateway.xml", "ITRS_Entities.xlsx")
+# Export to Excel
+df = pd.DataFrame(results)
+df.to_excel("ITRS_Entities.xlsx", index=False)
+print("✅ ITRS_Entities.xlsx has been created.")
