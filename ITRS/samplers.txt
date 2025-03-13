@@ -1,44 +1,50 @@
 import xml.etree.ElementTree as ET
 import pandas as pd
 
+def extract_text(elem, tag_name):
+    tag = elem.find(tag_name)
+    if tag is not None:
+        data = tag.find('data')
+        return data.text.strip() if data is not None and data.text else ''
+    return ''
+
 def parse_samplers(xml_file):
     tree = ET.parse(xml_file)
     root = tree.getroot()
+    samplers = []
 
-    samplers_data = []
+    for sg in root.iter():
+        if 'samplergroup' in sg.tag.lower():
+            group_name = sg.attrib.get('name', '')
+            for sampler in sg.findall(".//sampler"):
+                sampler_name = sampler.attrib.get('name', '')
 
-    # Look for the <samplers> section (case-insensitive)
-    for elem in root.iter():
-        if elem.tag.lower() == 'samplers':
-            for sampler in elem:
-                sampler_info = {
-                    'Sampler Name': sampler.attrib.get('name', ''),
-                    'Sampler Class': sampler.attrib.get('class', ''),
-                    'Sampler Type': sampler.attrib.get('type', ''),
-                    'Parameters': ''
-                }
+                # loop through all <process> elements inside plugins
+                for process in sampler.findall(".//plugin//processes//process"):
+                    alias = extract_text(process, 'alias')
+                    search_string = extract_text(process, 'ID/searchString')
+                    start = extract_text(process, 'start')
+                    stop = extract_text(process, 'stop')
 
-                # Collect <parameter> tags if present
-                params = []
-                for param in sampler.findall(".//parameter"):
-                    pname = param.attrib.get('name', '')
-                    pval = param.attrib.get('value', '')
-                    if pname or pval:
-                        params.append(f"{pname}={pval}" if pname else pval)
+                    samplers.append({
+                        "Sampler Group": group_name,
+                        "Sampler Name": sampler_name,
+                        "Alias": alias,
+                        "Search String": search_string,
+                        "Start Command": start,
+                        "Stop Command": stop
+                    })
 
-                sampler_info['Parameters'] = ", ".join(params)
-                samplers_data.append(sampler_info)
+    return samplers
 
-    return samplers_data
-
-def write_samplers_to_excel(xml_file, output_excel):
+def write_to_excel(xml_file, output_file):
     data = parse_samplers(xml_file)
     if data:
         df = pd.DataFrame(data)
-        df.to_excel(output_excel, index=False)
-        print(f"✅ Samplers data written to {output_excel}")
+        df.to_excel(output_file, index=False)
+        print(f"✅ Sampler data written to: {output_file}")
     else:
-        print("❌ No <samplers> section or data found.")
+        print("⚠️ No sampler data found.")
 
-# Example usage
-write_samplers_to_excel("gateway.xml", "ITRS_Samplers.xlsx")
+# Usage
+write_to_excel("gateway.xml", "ITRS_Samplers.xlsx")
