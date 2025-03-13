@@ -1,0 +1,128 @@
+import os
+import xml.etree.ElementTree as ET
+import pandas as pd
+
+def parse_probes(root):
+    results = []
+    probes_root = root.find("Probes") or root.find("probes")
+
+    def recurse(group, path=""):
+        name = group.attrib.get("name", "")
+        current_path = f"{path}/{name}" if path else name
+
+        for child in group:
+            if child.tag == "probeGroup":
+                recurse(child, current_path)
+            elif child.tag == "probe":
+                results.append({
+                    "Group Path": current_path,
+                    "Probe Name": child.attrib.get("name", ""),
+                    "Hostname": child.findtext("hostname", "")
+                })
+
+    if probes_root is not None:
+        for group in probes_root.findall("probeGroup"):
+            recurse(group)
+
+    return pd.DataFrame(results)
+
+
+def parse_entities(root):
+    results = []
+    entities_root = root.find("ManagedEntities") or root.find("managedEntities")
+
+    def recurse(group, path=""):
+        group_name = group.attrib.get("name", "")
+        current_path = f"{path}/{group_name}" if path else group_name
+
+        for child in group:
+            if child.tag == "managedEntityGroup":
+                recurse(child, current_path)
+            elif child.tag == "managedEntity":
+                entity = {
+                    "Group Path": current_path,
+                    "Entity Name": child.attrib.get("name", ""),
+                    "Probe Ref": child.attrib.get("probe", ""),
+                    "Type Refs": ", ".join(t.attrib.get("ref", "") for t in child.findall("type")),
+                    "Sampler Refs": ", ".join(s.attrib.get("ref", "") for s in child.findall("sampler"))
+                }
+                results.append(entity)
+
+    if entities_root is not None:
+        for group in entities_root.findall("managedEntityGroup"):
+            recurse(group)
+
+    return pd.DataFrame(results)
+
+
+def extract_all_tags(tag):
+    data = {}
+    for elem in tag.iter():
+        tag_name = elem.tag
+        if elem.text and elem.text.strip():
+            val = elem.text.strip()
+            if tag_name in data:
+                data[tag_name] += "; " + val
+            else:
+                data[tag_name] = val
+    return data
+
+
+def parse_samplers(root):
+    results = []
+    samplers_root = root.find("Samplers") or root.find("samplers")
+    if samplers_root is None:
+        return pd.DataFrame()
+
+    for sampler_group in samplers_root.findall("samplerGroup"):
+        group_name = sampler_group.attrib.get("name", "")
+        for sampler in sampler_group.findall("sampler"):
+            entry = {
+                "Sampler Group": group_name,
+                "Sampler Name": sampler.attrib.get("name", "")
+            }
+            plugin = sampler.find("plugin")
+            if plugin is not None:
+                entry.update(extract_all_tags(plugin))
+            results.append(entry)
+
+    return pd.DataFrame(results)
+
+
+# Output file in current working directory
+output_file = os.path.join(os.getcwd(), "ITRS_Config_Full.xlsx")
+writer = pd.ExcelWriter(output_file, engine='openpyxl')
+
+data_written = False
+
+# Parse all .xml files in current directory
+for xml_file in os.listdir():
+    if not xml_file.endswith(".xml"):
+        continue
+
+    try:
+        tree = ET.parse(xml_file)
+        root = tree.getroot()
+        base = os.path.splitext(xml_file)[0]
+
+        df_probes = parse_probes(root)
+        df_entities = parse_entities(root)
+        df_samplers = parse_samplers(root)
+
+        if not df_probes.empty:
+            df_probes.to_excel(writer, sheet_name=f"{base}_Probes", index=False)
+            data_written = True
+        if not df_entities.empty:
+            df_entities.to_excel(writer, sheet_name=f"{base}_Entities", index=False)
+            data_written = True
+        if not df_samplers.empty:
+            df_samplers.to_excel(writer, sheet_name=f"{base}_Samplers", index=False)
+            data_written = True
+    except Exception as e:
+        print(f"Error parsing {xml_file}: {e}")
+
+if not data_written:
+    pd.DataFrame({"Message": ["No valid data found in any XML file"]}).to_excel(writer, sheet_name="Info", index=False)
+
+writer.close()
+output_file
