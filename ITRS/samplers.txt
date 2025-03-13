@@ -1,0 +1,44 @@
+import xml.etree.ElementTree as ET
+import pandas as pd
+
+def parse_samplers(xml_file):
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    samplers_data = []
+
+    # Look for the <samplers> section (case-insensitive)
+    for elem in root.iter():
+        if elem.tag.lower() == 'samplers':
+            for sampler in elem:
+                sampler_info = {
+                    'Sampler Name': sampler.attrib.get('name', ''),
+                    'Sampler Class': sampler.attrib.get('class', ''),
+                    'Sampler Type': sampler.attrib.get('type', ''),
+                    'Parameters': ''
+                }
+
+                # Collect <parameter> tags if present
+                params = []
+                for param in sampler.findall(".//parameter"):
+                    pname = param.attrib.get('name', '')
+                    pval = param.attrib.get('value', '')
+                    if pname or pval:
+                        params.append(f"{pname}={pval}" if pname else pval)
+
+                sampler_info['Parameters'] = ", ".join(params)
+                samplers_data.append(sampler_info)
+
+    return samplers_data
+
+def write_samplers_to_excel(xml_file, output_excel):
+    data = parse_samplers(xml_file)
+    if data:
+        df = pd.DataFrame(data)
+        df.to_excel(output_excel, index=False)
+        print(f"✅ Samplers data written to {output_excel}")
+    else:
+        print("❌ No <samplers> section or data found.")
+
+# Example usage
+write_samplers_to_excel("gateway.xml", "ITRS_Samplers.xlsx")
