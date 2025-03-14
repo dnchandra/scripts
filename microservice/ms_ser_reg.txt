@@ -16,6 +16,7 @@ register_service() {
     local service_file="$SYSTEMD_DIR/$service_name.service"
     local start_script="$BASE_DIR/$service_name/1/start-service.sh"
     local stop_script="$BASE_DIR/$service_name/1/stop-service.sh"
+    local env_file="$BASE_DIR/$service_name/1/start.sh"
 
     if [ -f "$service_file" ]; then
         log_message "$service_name is already registered. Skipping."
@@ -28,27 +29,30 @@ register_service() {
         log_message "Registering $service_name..."
 
         start_cmd="/bin/bash -c '$start_script >> /apps/logs/startup.log 2>&1 &'"
-        stop_cmd="/bin/bash -c '$stop_script >> /apps/logs/shutdown.log 2>&1 &'"
+        stop_cmd="$stop_script"
 
         after_requires="After=network.target"
-        requires=""
         if [ "$service_name" == "MonitorService" ]; then
             after_requires+=" consul.service"
-            requires="Requires=consul.service"
         elif [ "$service_name" != "consul" ]; then
             after_requires+=" consul.service MonitorService.service"
-            requires="Requires=consul.service MonitorService.service"
+        fi
+
+        if [ -f "$env_file" ]; then
+            env_line="EnvironmentFile=$env_file"
+        else
+            env_line=""
         fi
 
         cat <<EOF > "$service_file"
 [Unit]
 Description=$service_name Service
 $after_requires
-$requires
 
 [Service]
 User=msuser
 Group=mggroup
+$env_line
 ExecStart=$start_cmd
 ExecStop=$stop_cmd
 Type=forking
