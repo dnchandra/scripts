@@ -4,15 +4,54 @@ BASE_DIR="/apps/services"
 CONSUL_DIR="/products/consul"
 LOG_FILE="/apps/logs/microservice_registration.log"
 SYSTEMD_DIR="/etc/systemd/system"
-TOKEN_ENV_FILE="/etc/consul/consul.env"
-CONSUL_READY_SCRIPT="/usr/local/bin/check-consul-ready.sh"
+TOKEN_FILE="/etc/consul/consul.token"
 
+# Helper function for logging
 log_message() {
     echo "$(date): $1" >> "$LOG_FILE"
 }
 
 log_message "Starting microservices registration..."
 
+# Load raw Consul token from file
+load_consul_token() {
+    if [ -f "$TOKEN_FILE" ]; then
+        CONSUL_HTTP_TOKEN=$(cat "$TOKEN_FILE")
+        export CONSUL_HTTP_TOKEN
+    else
+        log_message "Consul token file not found: $TOKEN_FILE"
+        return 1
+    fi
+}
+
+# Function to check Consul client readiness
+check_consul_client_ready() {
+    load_consul_token || return 1
+
+    timeout=90
+    start_time=$(date +%s)
+
+    log_message "Checking if Consul client is ready..."
+
+    while true; do
+        agent_status=$(curl -s --header "X-Consul-Token: $CONSUL_HTTP_TOKEN" http://localhost:8500/v1/agent/self)
+
+        if [[ $agent_status == *'"server":false'* && $agent_status == *'"status":"alive"'* ]]; then
+            log_message "Consul client is alive and connected."
+            return 0
+        fi
+
+        current_time=$(date +%s)
+        if (( current_time - start_time >= timeout )); then
+            log_message "Consul readiness check timed out after $timeout seconds."
+            return 1
+        fi
+
+        sleep 2
+    done
+}
+
+# Function to register a service
 register_service() {
     local service_name=$1
     local service_file="$SYSTEMD_DIR/$service_name.service"
@@ -26,30 +65,31 @@ register_service() {
     fi
 
     if [ ! -f "$start_script" ]; then
-        log_message "$service_name does not have a start-service.sh. Skipping registration."
+        log_message "$service_name does not have a start-service.sh. Skipping."
         return
     fi
 
     log_message "Registering $service_name..."
 
-    local start_cmd="/bin/bash -c '$start_script >> /apps/logs/startup.log 2>&1 &'"
-    local stop_cmd="$stop_script"
+    start_cmd="/bin/bash -c '$start_script >> /apps/logs/startup.log 2>&1 &'"
+    stop_cmd="$stop_script"
 
-    local after_deps="After=network.target"
-    local wants_deps="Wants=network.target"
+    # Dependency and delay setup
+    local dynamic_after="network.target"
+    local dynamic_wants="network.target"
     local delay=""
     
     if [ "$service_name" == "MonitorService" ]; then
-        after_deps+=" consul.service"
-        wants_deps+=" consul.service"
-        delay="ExecStartPre=$CONSUL_READY_SCRIPT"
+        dynamic_after+=" consul.service"
+        dynamic_wants+=" consul.service"
+        delay="ExecStartPre=/bin/bash -c 'bash -c \"$(declare -f check_consul_client_ready); check_consul_client_ready\" || sleep 60'"
     elif [ "$service_name" == "AuthService" ]; then
-        after_deps+=" consul.service MonitorService.service"
-        wants_deps+=" consul.service MonitorService.service"
+        dynamic_after+=" consul.service MonitorService.service"
+        dynamic_wants+=" consul.service MonitorService.service"
         delay="ExecStartPre=/bin/sleep 45"
     elif [ "$service_name" != "consul" ]; then
-        after_deps+=" consul.service MonitorService.service"
-        wants_deps+=" consul.service MonitorService.service"
+        dynamic_after+=" consul.service MonitorService.service"
+        dynamic_wants+=" consul.service MonitorService.service"
         delay="ExecStartPre=/bin/sleep 30"
     fi
 
@@ -58,11 +98,12 @@ register_service() {
         env_line="EnvironmentFile=$env_file"
     fi
 
+    # Create systemd service file
     cat <<EOF > "$service_file"
 [Unit]
 Description=$service_name Service
-$after_deps
-$wants_deps
+After=$dynamic_after
+Wants=$dynamic_wants
 
 [Service]
 User=msuser
@@ -81,25 +122,24 @@ EOF
 
     systemctl daemon-reload
     systemctl enable "$service_name.service"
-    log_message "Registered $service_name successfully."
+    log_message "$service_name registered."
 }
 
-# Register Consul Service
+# Register Consul client if available
 if [ -f "$CONSUL_DIR/startup.sh" ]; then
-    log_message "Registering Consul client service..."
+    log_message "Registering Consul client..."
 
     cat <<EOF > "$SYSTEMD_DIR/consul.service"
 [Unit]
-Description=Consul Client Service
+Description=Consul Client
 After=network.target
 Wants=network.target
 
 [Service]
 User=msuser
 Group=mggroup
-EnvironmentFile=$TOKEN_ENV_FILE
 ExecStart=/bin/bash -c '$CONSUL_DIR/startup.sh >> /apps/logs/startup.log 2>&1 &'
-ExecStartPost=$CONSUL_READY_SCRIPT
+ExecStartPost=/bin/bash -c 'bash -c "$(declare -f load_consul_token); $(declare -f check_consul_client_ready); check_consul_client_ready"'
 ExecStop=/bin/bash -c '$CONSUL_DIR/stop.sh >> /apps/logs/shutdown.log 2>&1 &'
 Type=forking
 Restart=on-failure
@@ -111,12 +151,12 @@ EOF
 
     systemctl daemon-reload
     systemctl enable consul.service
-    log_message "Consul client service registered."
+    log_message "Consul client registered."
 else
-    log_message "Consul not found! Skipping Consul registration."
+    log_message "Consul startup.sh not found! Skipping Consul registration."
 fi
 
-# Register all services
+# Register all other services
 for service_dir in "$BASE_DIR"/*; do
     service_name=$(basename "$service_dir")
     register_service "$service_name"
