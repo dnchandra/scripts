@@ -1,0 +1,149 @@
+#!/bin/bash
+
+BASE_DIR="/apps/services"
+CONSUL_DIR="/products/consul"
+LOG_FILE="/apps/logs/microservice_registration.log"
+SYSTEMD_DIR="/etc/systemd/system"
+
+# Function to log messages
+log_message() {
+    local message=$1
+    echo "$(date): $message" >> "$LOG_FILE"
+}
+
+log_message "Starting microservices registration..."
+
+# Function to check if actual service process is running
+is_process_running() {
+    local service_name=$1
+    pgrep -f "$service_name" > /dev/null
+}
+
+register_service() {
+    local service_name=$1
+    local service_file="$SYSTEMD_DIR/$service_name.service"
+    local env_file="$BASE_DIR/$service_name/1/env.sh"
+
+    if [ -f "$service_file" ]; then
+        log_message "$service_name is already registered. Skipping."
+    else
+        log_message "Registering $service_name..."
+
+        if [ -f "$env_file" ]; then
+            start_cmd="/bin/bash -c 'source $env_file && $BASE_DIR/$service_name/1/start-service.sh >> /apps/logs/startup.log 2>&1'"
+            stop_cmd="/bin/bash -c 'source $env_file && $BASE_DIR/$service_name/1/stop-service.sh >> /apps/logs/shutdown.log 2>&1'"
+        else
+            start_cmd="/bin/bash -c '$BASE_DIR/$service_name/1/start-service.sh >> /apps/logs/startup.log 2>&1'"
+            stop_cmd="/bin/bash -c '$BASE_DIR/$service_name/1/stop-service.sh >> /apps/logs/shutdown.log 2>&1'"
+        fi
+
+        cat <<EOF > "$service_file"
+[Unit]
+Description=$service_name Service
+After=network.target consul.service
+Requires=consul.service
+
+[Service]
+User=msuser
+Group=mggroup
+ExecStart=$start_cmd
+ExecStop=$stop_cmd
+Type=oneshot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        systemctl daemon-reload
+        systemctl enable "$service_name.service"
+        log_message "Registered $service_name successfully."
+    fi
+}
+
+start_service() {
+    local service_name=$1
+    if is_process_running "$service_name"; then
+        log_message "$service_name is already running (verified via process check). Skipping start."
+    else
+        log_message "$service_name is not running. Starting via systemd..."
+        systemctl start "$service_name.service"
+    fi
+}
+
+wait_for_service() {
+    local service_name=$1
+    local timeout=$2
+    local interval=5
+    local elapsed=0
+
+    while (( elapsed < timeout )); do
+        if is_process_running "$service_name"; then
+            log_message "$service_name is up."
+            return 0
+        fi
+        log_message "Waiting for $service_name to come up ($elapsed sec elapsed)..."
+        sleep $interval
+        (( elapsed += interval ))
+    done
+
+    log_message "Timeout reached: $service_name did not start in $timeout seconds."
+    return 1
+}
+
+if [ -f "$CONSUL_DIR/startup.sh" ]; then
+    log_message "Registering Consul service..."
+    cat <<EOF > "$SYSTEMD_DIR/consul.service"
+[Unit]
+Description=Consul Service
+After=network.target
+
+[Service]
+User=msuser
+Group=mggroup
+ExecStart=/bin/bash -c "$CONSUL_DIR/startup.sh >> /apps/logs/startup.log 2>&1"
+ExecStop=/bin/bash -c "$CONSUL_DIR/stop.sh >> /apps/logs/shutdown.log 2>&1"
+Type=oneshot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable consul.service
+    systemctl start consul.service
+    log_message "Consul service registered and started."
+
+    wait_for_service "consul" 90
+else
+    log_message "Consul not found! Skipping Consul startup."
+fi
+
+if [ -d "$BASE_DIR/MonitorService" ]; then
+    register_service "MonitorService"
+    start_service "MonitorService"
+    wait_for_service "MonitorService" 90
+fi
+
+if [ -d "$BASE_DIR/AuthService" ]; then
+    register_service "AuthService"
+    start_service "AuthService"
+    wait_for_service "AuthService" 30
+fi
+
+pids=()
+for service_dir in "$BASE_DIR"/*; do
+    service_name=$(basename "$service_dir")
+    if [[ -d "$service_dir" && "$service_name" != "MonitorService" && "$service_name" != "AuthService" ]]; then
+        register_service "$service_name"
+        start_service "$service_name" &
+        pids+=($!)
+    fi
+done
+
+for pid in "${pids[@]}"; do
+    wait "$pid"
+done
+
+log_message "All services registered and started successfully!"
