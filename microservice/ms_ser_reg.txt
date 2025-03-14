@@ -32,10 +32,17 @@ register_service() {
         stop_cmd="$stop_script"
 
         after_requires="After=network.target"
+        delay=""
+
         if [ "$service_name" == "MonitorService" ]; then
             after_requires+=" consul.service"
+            delay="ExecStartPre=/bin/sleep 60"
+        elif [ "$service_name" == "AuthService" ]; then
+            after_requires+=" consul.service MonitorService.service"
+            delay="ExecStartPre=/bin/sleep 45"
         elif [ "$service_name" != "consul" ]; then
             after_requires+=" consul.service MonitorService.service"
+            delay="ExecStartPre=/bin/sleep 30"
         fi
 
         if [ -f "$env_file" ]; then
@@ -53,6 +60,7 @@ $after_requires
 User=msuser
 Group=mggroup
 $env_line
+$delay
 ExecStart=$start_cmd
 ExecStop=$stop_cmd
 Type=forking
