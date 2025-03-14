@@ -13,7 +13,6 @@ log_message() {
 
 log_message "Starting microservices registration..."
 
-# Function to register a service if not already registered
 register_service() {
     local service_name=$1
     local service_file="$SYSTEMD_DIR/$service_name.service"
@@ -29,11 +28,11 @@ After=network.target consul.service
 Requires=consul.service
 
 [Service]
-User=msgroup
-ExecStart=/bin/bash -c "\$BASE_DIR/$service_name/1/start-service.sh >> /apps/logs/startup.log 2>&1"
-ExecStop=/bin/bash -c "\$BASE_DIR/$service_name/1/stop-service.sh >> /apps/logs/shutdown.log 2>&1"
-Restart=always
-RestartSec=30s
+User=msuser
+Group=mggroup
+ExecStart=/bin/bash -c '$BASE_DIR/$service_name/1/start-service.sh >> /apps/logs/startup.log 2>&1'
+ExecStop=/bin/bash -c '$BASE_DIR/$service_name/1/stop-service.sh >> /apps/logs/shutdown.log 2>&1'
+Type=simple
 
 [Install]
 WantedBy=multi-user.target
@@ -45,7 +44,6 @@ EOF
     fi
 }
 
-# Function to start a service if not already running
 start_service() {
     local service_name=$1
     if systemctl is-active --quiet "$service_name.service"; then
@@ -56,7 +54,6 @@ start_service() {
     fi
 }
 
-# Function to wait for a service with a timeout
 wait_for_service() {
     local service_name=$1
     local timeout=$2
@@ -77,7 +74,6 @@ wait_for_service() {
     return 1
 }
 
-# 1️⃣ Register and Start Consul FIRST
 if [ -f "$CONSUL_DIR/startup.sh" ]; then
     log_message "Registering Consul service..."
     cat <<EOF > "$SYSTEMD_DIR/consul.service"
@@ -86,11 +82,11 @@ Description=Consul Service
 After=network.target
 
 [Service]
-User=msgroup
-ExecStart=/bin/bash -c "\$CONSUL_DIR/startup.sh >> \$CONSUL_DIR/consul.log 2>&1"
-ExecStop=/bin/bash -c "\$CONSUL_DIR/stop.sh >> \$CONSUL_DIR/consul.log 2>&1"
-Restart=on-failure
-RestartSec=5s
+User=msuser
+Group=mggroup
+ExecStart=/bin/bash -c '$CONSUL_DIR/startup.sh >> $CONSUL_DIR/consul.log 2>&1'
+ExecStop=/bin/bash -c '$CONSUL_DIR/stop.sh >> $CONSUL_DIR/consul.log 2>&1'
+Type=simple
 
 [Install]
 WantedBy=multi-user.target
@@ -101,27 +97,23 @@ EOF
     systemctl start consul.service
     log_message "Consul service registered and started."
 
-    # Wait for Consul to be UP (max 90 sec)
     wait_for_service "consul" 90
 else
     log_message "Consul not found! Skipping Consul startup."
 fi
 
-# 2️⃣ Register & Start MonitorService (wait up to 90 sec)
 if [ -d "$BASE_DIR/MonitorService" ]; then
     register_service "MonitorService"
     start_service "MonitorService"
     wait_for_service "MonitorService" 90
 fi
 
-# 3️⃣ Register & Start AuthService (wait up to 30 sec)
 if [ -d "$BASE_DIR/AuthService" ]; then
     register_service "AuthService"
     start_service "AuthService"
     wait_for_service "AuthService" 30
 fi
 
-# 4️⃣ Register & Start Remaining Services in Parallel
 pids=()
 for service_dir in "$BASE_DIR"/*; do
     service_name=$(basename "$service_dir")
@@ -132,10 +124,8 @@ for service_dir in "$BASE_DIR"/*; do
     fi
 done
 
-# Wait for all background processes to finish
 for pid in "${pids[@]}"; do
     wait "$pid"
 done
 
 log_message "All services registered and started successfully!"
-]
