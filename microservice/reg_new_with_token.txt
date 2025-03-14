@@ -1,0 +1,125 @@
+#!/bin/bash
+
+BASE_DIR="/apps/services"
+CONSUL_DIR="/products/consul"
+LOG_FILE="/apps/logs/microservice_registration.log"
+SYSTEMD_DIR="/etc/systemd/system"
+TOKEN_ENV_FILE="/etc/consul/consul.env"
+CONSUL_READY_SCRIPT="/usr/local/bin/check-consul-ready.sh"
+
+log_message() {
+    echo "$(date): $1" >> "$LOG_FILE"
+}
+
+log_message "Starting microservices registration..."
+
+register_service() {
+    local service_name=$1
+    local service_file="$SYSTEMD_DIR/$service_name.service"
+    local start_script="$BASE_DIR/$service_name/1/start-service.sh"
+    local stop_script="$BASE_DIR/$service_name/1/stop-service.sh"
+    local env_file="$BASE_DIR/$service_name/1/start.sh"
+
+    if [ -f "$service_file" ]; then
+        log_message "$service_name is already registered. Skipping."
+        return
+    fi
+
+    if [ ! -f "$start_script" ]; then
+        log_message "$service_name does not have a start-service.sh. Skipping registration."
+        return
+    fi
+
+    log_message "Registering $service_name..."
+
+    local start_cmd="/bin/bash -c '$start_script >> /apps/logs/startup.log 2>&1 &'"
+    local stop_cmd="$stop_script"
+
+    local after_deps="After=network.target"
+    local wants_deps="Wants=network.target"
+    local delay=""
+    
+    if [ "$service_name" == "MonitorService" ]; then
+        after_deps+=" consul.service"
+        wants_deps+=" consul.service"
+        delay="ExecStartPre=$CONSUL_READY_SCRIPT"
+    elif [ "$service_name" == "AuthService" ]; then
+        after_deps+=" consul.service MonitorService.service"
+        wants_deps+=" consul.service MonitorService.service"
+        delay="ExecStartPre=/bin/sleep 45"
+    elif [ "$service_name" != "consul" ]; then
+        after_deps+=" consul.service MonitorService.service"
+        wants_deps+=" consul.service MonitorService.service"
+        delay="ExecStartPre=/bin/sleep 30"
+    fi
+
+    local env_line=""
+    if [ -f "$env_file" ]; then
+        env_line="EnvironmentFile=$env_file"
+    fi
+
+    cat <<EOF > "$service_file"
+[Unit]
+Description=$service_name Service
+$after_deps
+$wants_deps
+
+[Service]
+User=msuser
+Group=mggroup
+$env_line
+$delay
+ExecStart=$start_cmd
+ExecStop=$stop_cmd
+Type=forking
+Restart=on-failure
+TimeoutStartSec=90s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable "$service_name.service"
+    log_message "Registered $service_name successfully."
+}
+
+# Register Consul Service
+if [ -f "$CONSUL_DIR/startup.sh" ]; then
+    log_message "Registering Consul client service..."
+
+    cat <<EOF > "$SYSTEMD_DIR/consul.service"
+[Unit]
+Description=Consul Client Service
+After=network.target
+Wants=network.target
+
+[Service]
+User=msuser
+Group=mggroup
+EnvironmentFile=$TOKEN_ENV_FILE
+ExecStart=/bin/bash -c '$CONSUL_DIR/startup.sh >> /apps/logs/startup.log 2>&1 &'
+ExecStartPost=$CONSUL_READY_SCRIPT
+ExecStop=/bin/bash -c '$CONSUL_DIR/stop.sh >> /apps/logs/shutdown.log 2>&1 &'
+Type=forking
+Restart=on-failure
+TimeoutStartSec=90s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable consul.service
+    log_message "Consul client service registered."
+else
+    log_message "Consul not found! Skipping Consul registration."
+fi
+
+# Register all services
+for service_dir in "$BASE_DIR"/*; do
+    service_name=$(basename "$service_dir")
+    register_service "$service_name"
+done
+
+log_message "All services registered."
