@@ -1,0 +1,37 @@
+#!/bin/bash
+
+LOG_FILE="/apps/logs/microservice_registration.log"
+TOKEN_ENV_FILE="/etc/consul/consul.env"
+timeout=90
+start_time=$(date +%s)
+
+log_message() {
+    echo "$(date): $1" >> "$LOG_FILE"
+}
+
+log_message "Checking if Consul client is ready and connected to the cluster..."
+
+if [ -f "$TOKEN_ENV_FILE" ]; then
+    source "$TOKEN_ENV_FILE"
+else
+    log_message "Consul token environment file not found!"
+    exit 1
+fi
+
+while true; do
+    agent_status=$(curl -s --header "X-Consul-Token: $CONSUL_HTTP_TOKEN" http://localhost:8500/v1/agent/self)
+
+    if [[ $agent_status == *'"server":false'* && $agent_status == *'"status":"alive"'* ]]; then
+        log_message "Consul client is alive and connected."
+        exit 0
+    fi
+
+    current_time=$(date +%s)
+    if (( current_time - start_time >= timeout )); then
+        log_message "Consul client readiness check timed out after $timeout seconds. Falling back to sleep 60."
+        sleep 60
+        exit 0
+    fi
+
+    sleep 2
+done
