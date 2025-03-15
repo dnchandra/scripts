@@ -1,16 +1,16 @@
 #!/bin/bash
 
-CONSUL_TOKEN_FILE="/apps/services/consul.token"
+CONSUL_TOKEN_FILE="/etc/consul/consul.token"
 LOG_FILE="/apps/logs/microservice_registration.log"
-CONSUL_URL="http://localhost:8500"
 
 log_message() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    local msg="$(date '+%Y-%m-%d %H:%M:%S') - $1"
+    echo "$msg" | tee -a "$LOG_FILE"
 }
 
 load_consul_token() {
-    if [[ -f "$CONSUL_TOKEN_FILE" ]]; then
-        CONSUL_HTTP_TOKEN=$(<"$CONSUL_TOKEN_FILE")
+    if [ -f "$CONSUL_TOKEN_FILE" ]; then
+        CONSUL_HTTP_TOKEN=$(cat "$CONSUL_TOKEN_FILE")
         export CONSUL_HTTP_TOKEN
         return 0
     else
@@ -29,15 +29,17 @@ check_consul_client_ready() {
     load_consul_token || return 1
 
     while true; do
-        local response
-        response=$(curl -s --header "X-Consul-Token: $CONSUL_HTTP_TOKEN" "$CONSUL_URL/v1/agent/self")
+        local agent_status
+        agent_status=$(curl -s --header "X-Consul-Token: $CONSUL_HTTP_TOKEN" http://localhost:8500/v1/agent/self)
 
-        if [[ $response == *'"server":false'* && $response == *'"status":"alive"'* ]]; then
+        if [[ $agent_status == *'"server":false'* && $agent_status == *'"status":"alive"'* ]]; then
             log_message "Consul client is alive and connected."
             return 0
         fi
 
-        if (( $(date +%s) - start_time >= timeout )); then
+        local current_time
+        current_time=$(date +%s)
+        if (( current_time - start_time >= timeout )); then
             log_message "Consul readiness check timed out after $timeout seconds."
             return 1
         fi
@@ -46,5 +48,5 @@ check_consul_client_ready() {
     done
 }
 
-# Run the check when script is executed
+# Run the check when script is executed directly
 check_consul_client_ready
