@@ -1,0 +1,128 @@
+#!/bin/bash
+
+BASE_DIR="/apps/services"
+CONSUL_DIR="/products/consul"
+SYSTEMD_DIR="/etc/systemd/system"
+LOG_FILE="/apps/logs/microservice_registration.log"
+CONSUL_READY_SCRIPT="/apps/check_consul_ready.sh"
+
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+}
+
+register_service() {
+    local service=$1
+    local service_path="$BASE_DIR/$service/1"
+    local start_script="$service_path/start-service.sh"
+    local stop_script="$service_path/stop-service.sh"
+    local service_file="$SYSTEMD_DIR/$service.service"
+
+    if [[ ! -d "$service_path" ]]; then
+        log_message "Skipping $service: Directory not found."
+        return
+    fi
+
+    if [[ ! -f "$start_script" ]]; then
+        log_message "Skipping $service: start-service.sh not found."
+        return
+    fi
+
+    if [[ -f "$service_file" ]]; then
+        log_message "$service already registered. Skipping."
+        return
+    fi
+
+    log_message "Creating systemd service file for: $service"
+
+    # Determine dependencies and delays
+    local after_deps="After=network.target"
+    local delay=""
+
+    case "$service" in
+        MonitorService)
+            after_deps+=" consul.service"
+            delay="ExecStartPre=$CONSUL_READY_SCRIPT || /bin/sleep 60"
+            ;;
+        AuthService)
+            after_deps+=" consul.service MonitorService.service"
+            delay="ExecStartPre=/bin/sleep 45"
+            ;;
+        *)
+            after_deps+=" consul.service MonitorService.service"
+            delay="ExecStartPre=/bin/sleep 30"
+            ;;
+    esac
+
+    cat <<EOF | sudo tee "$service_file" > /dev/null
+[Unit]
+Description=$service Service
+$after_deps
+
+[Service]
+User=msuser
+Group=mggroup
+$delay
+ExecStart=/bin/bash $start_script
+ExecStop=/bin/bash $stop_script
+Type=simple
+Restart=on-failure
+TimeoutStartSec=90s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable "$service"
+    log_message "$service registered successfully."
+}
+
+register_consul() {
+    local consul_service="$SYSTEMD_DIR/consul.service"
+
+    if [[ -f "$consul_service" ]]; then
+        log_message "Consul already registered. Skipping."
+        return
+    fi
+
+    if [[ ! -f "$CONSUL_DIR/startup.sh" ]]; then
+        log_message "Consul startup.sh not found. Skipping Consul registration."
+        return
+    fi
+
+    log_message "Creating systemd unit for Consul"
+
+    cat <<EOF | sudo tee "$consul_service" > /dev/null
+[Unit]
+Description=Consul Service
+After=network.target
+
+[Service]
+User=msuser
+Group=mggroup
+ExecStart=/bin/bash $CONSUL_DIR/startup.sh
+ExecStop=/bin/bash $CONSUL_DIR/stop.sh
+Type=simple
+Restart=on-failure
+TimeoutStartSec=90s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable consul.service
+    log_message "Consul service registered."
+}
+
+# Register Consul first
+register_consul
+
+# Register all services under BASE_DIR
+for dir in "$BASE_DIR"/*/1; do
+    [[ -f "$dir/start-service.sh" ]] || continue
+    service_name=$(basename "$(dirname "$dir")")
+    register_service "$service_name"
+done
+
+log_message "All microservices registration complete."
