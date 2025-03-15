@@ -20,31 +20,29 @@ load_consul_token() {
 
 check_consul_client_ready() {
     local timeout=90
-    local start_time
-    start_time=$(date +%s)
+    local interval=2
+    local elapsed=0
 
     log_message "Checking if Consul client is ready..."
     load_consul_token || return 1
 
-    while true; do
-        # Get agent details from Consul
+    while (( elapsed < timeout )); do
         response=$(curl -s --header "X-Consul-Token: $CONSUL_HTTP_TOKEN" http://localhost:8500/v1/agent/self)
 
-        # Extract Server flag using jq
-        is_server=$(echo "$response" | jq -r '.Config.Server')
-
-        if [[ "$is_server" == "false" ]]; then
+        if echo "$response" | grep -q '"Server":false'; then
             log_message "Consul client is running and healthy."
             return 0
         fi
 
-        # Check timeout
-        current_time=$(date +%s)
-        if (( current_time - start_time >= timeout )); then
-            log_message "Consul readiness check timed out after $timeout seconds."
-            return 1
-        fi
-
-        sleep 2
+        sleep "$interval"
+        ((elapsed+=interval))
     done
+
+    log_message "Consul readiness check timed out after $timeout seconds."
+    return 1
 }
+
+# Only run if script is executed directly (for testing)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    check_consul_client_ready
+fi
