@@ -1,0 +1,167 @@
+
+#!/bin/bash
+set -euo pipefail
+
+# ======= CONFIGURATION =======
+AWX_NAMESPACE="awx"
+AWX_OPERATOR_VERSION="2.19.1"
+KUBECTL_VERSION="v1.30.1"
+MINIKUBE_VERSION="v1.33.1"
+MINIKUBE_CPUS=4
+MINIKUBE_MEMORY=8192
+# =============================
+
+echo "==== Installing dependencies ===="
+sudo yum install -y yum-utils curl git
+
+echo "==== Installing Docker CE ===="
+sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+sudo yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+
+echo "==== Installing Minikube ===="
+curl -Lo minikube https://storage.googleapis.com/minikube/releases/${MINIKUBE_VERSION}/minikube-linux-amd64
+sudo install minikube /usr/local/bin/
+rm -f minikube
+
+echo "==== Installing kubectl ===="
+curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/
+rm -f kubectl
+
+echo "==== Installing kustomize ===="
+curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+sudo mv kustomize /usr/local/bin/
+
+echo "==== Starting Minikube with ingress addon ===="
+minikube start --cpus=${MINIKUBE_CPUS} --memory=${MINIKUBE_MEMORY} --addons=ingress --driver=docker
+
+echo "==== Checking Minikube Cluster ===="
+kubectl get nodes || { echo "Minikube failed to start!"; exit 1; }
+
+echo "==== Creating AWX deployment directory ===="
+mkdir -p awx-operator
+cd awx-operator
+
+echo "==== Creating kustomization.yaml ===="
+cat <<EOF > kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - github.com/ansible/awx-operator/config/default?ref=${AWX_OPERATOR_VERSION}
+  - awx-demo.yaml
+
+images:
+  - name: quay.io/ansible/awx-operator
+    newTag: ${AWX_OPERATOR_VERSION}
+
+namespace: ${AWX_NAMESPACE}
+EOF
+
+echo "==== Creating awx-demo.yaml ===="
+cat <<EOF > awx-demo.yaml
+apiVersion: awx.ansible.com/v1beta1
+kind: AWX
+metadata:
+  name: awx-demo
+spec:
+  service_type: nodeport
+EOF
+
+echo "==== Creating namespace '${AWX_NAMESPACE}' ===="
+kubectl get namespace "${AWX_NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${AWX_NAMESPACE}"
+
+kubectl config set-context --current --namespace="${AWX_NAMESPACE}"
+
+echo "==== Deploying AWX Operator and AWX instance ===="
+kustomize build . | kubectl apply -f -
+
+echo "==== Waiting for AWX pods to be created ===="
+for i in {1..12}; do
+  PODS=$(kubectl get pods -n "${AWX_NAMESPACE}" -l app.kubernetes.io/managed-by=awx-operator --no-headers 2>/dev/null | wc -l || true)
+  if [[ "$PODS" -gt 0 ]]; then
+    echo "AWX pods found."
+    break
+  fi
+  echo "No AWX pods yet, waiting 5 seconds..."
+  sleep 5
+done
+
+echo "==== Waiting for AWX pods to be ready ===="
+
+TOTAL_MINUTES=5
+
+for ((i=TOTAL_MINUTES; i>=0; i--)); do
+  echo "AWX pods will be ready in $i min..."
+  if kubectl wait --for=condition=Ready pod -l app.kubernetes.io/managed-by=awx-operator -n "${AWX_NAMESPACE}" --timeout=30s; then
+    echo "AWX pods are ready."
+    break
+  fi
+done
+
+if ! kubectl wait --for=condition=Ready pod -l app.kubernetes.io/managed-by=awx-operator -n "${AWX_NAMESPACE}" --timeout=0s &>/dev/null; then
+  echo "AWX pods failed to start properly after waiting."
+  exit 1
+fi
+
+echo "==== Checking AWX pod status in namespace '${AWX_NAMESPACE}' ===="
+kubectl get pods -n "${AWX_NAMESPACE}"
+
+echo "==== Waiting for awx-demo-migration pod to complete ===="
+while true; do
+  STATUS=$(kubectl get pod -n "${AWX_NAMESPACE}" | grep awx-demo-migration | awk '{print $3}' || echo "NotFound")
+  if [[ "$STATUS" == "Completed" ]]; then
+    echo "awx-demo-migration pod completed successfully. Continuing..."
+    break
+  elif [[ "$STATUS" == "Failed" ]]; then
+    echo "Error: awx-demo-migration pod failed."
+    exit 1
+  elif [[ "$STATUS" == "NotFound" ]]; then
+    echo "awx-demo-migration pod not found yet. Waiting 10 seconds..."
+  else
+    echo "awx-demo-migration pod status: $STATUS. Waiting 10 seconds..."
+  fi
+  sleep 10
+done
+
+echo "==== Waiting for awx-demo-task pod to be running ===="
+while true; do
+  STATUS=$(kubectl get pod -n "${AWX_NAMESPACE}" | grep awx-demo-task | awk '{print $3}' || echo "NotFound")
+  if [[ "$STATUS" == "Running" ]]; then
+    echo "awx-demo-task pod is running. AWX setup completed!"
+    break
+  elif [[ "$STATUS" == "Failed" ]]; then
+    echo "Error: awx-demo-task pod failed."
+    exit 1
+  elif [[ "$STATUS" == "NotFound" ]]; then
+    echo "awx-demo-task pod not found yet. Waiting 10 seconds..."
+  else
+    echo "awx-demo-task pod status: $STATUS. Waiting 10 seconds..."
+  fi
+  sleep 10
+done
+
+echo "==== Getting NodePort for AWX Web UI ===="
+NODE_PORT=$(kubectl get svc awx-demo-service -n "${AWX_NAMESPACE}" -o jsonpath='{.spec.ports[0].nodePort}' || echo "Not found")
+
+MINIKUBE_IP=$(minikube ip)
+
+echo
+echo "AWX Web UI URL: http://${MINIKUBE_IP}:${NODE_PORT}"
+echo
+
+echo "==== Getting AWX admin password ===="
+if kubectl get secret awx-demo-admin-password -n "${AWX_NAMESPACE}" >/dev/null 2>&1; then
+  ADMIN_PASSWORD=$(kubectl get secret awx-demo-admin-password -n "${AWX_NAMESPACE}" -o jsonpath="{.data.password}" | base64 --decode)
+else
+  ADMIN_PASSWORD="Secret not found. Check AWX Operator deployment."
+fi
+
+echo "AWX admin password: ${ADMIN_PASSWORD}"
+echo
+
+echo "==== Starting port-forward to access AWX UI locally ===="
+kubectl port-forward service/awx-demo-service -n ${AWX_NAMESPACE} --address 0.0.0.0 8080:80 > /dev/null 2>&1 &
+
+echo "Port forwarding started. Access AWX UI at http://localhost:8080"
