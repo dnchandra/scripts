@@ -1,0 +1,25 @@
+Right now Dynatrace thinks both 3forge Java PIDs are identical (same JAR, main class, etc.), so it merges them into one process with “2 worker processes”.
+
+DT_CLUSTER_ID=3forge-worker
+DT_NODE_ID=3FPOC_2
+
+
+INSTANCE_ID="${DT_NODE_ID:-$(basename "$(dirname "$(dirname "$APPDIR")")")}"
+export DT_CLUSTER_ID="${DT_CLUSTER_ID:-3forge-worker}"    
+export DT_NODE_ID="$INSTANCE_ID"
+export DT_TAGS="${DT_TAGS:-env=dev,app=3forge,role=worker,id=${DT_NODE_ID}}"
+
+
+# ===== Dynatrace node/cluster from JVM args =====
+
+AMI_INSTANCE="$(printf '%s' "$JAVA_OPTIONS" | sed -n 's/.*-Dami_Instance=\([^[:space:]]*\).*/\1/p')"
+
+# Fallbacks if not present; also allow manual override from env
+: "${AMI_INSTANCE:=${DT_NODE_ID:-3forge-node}}"
+
+# (Optional) sanitize to safe characters for Dynatrace labels
+SAFE_NODE_ID="$(printf '%s' "$AMI_INSTANCE" | tr -cs '[:alnum:]_.-:' '-')"
+
+export DT_CLUSTER_ID="${DT_CLUSTER_ID:-3forge-worker}"   
+export DT_NODE_ID="${SAFE_NODE_ID}"
+export DT_TAGS="${DT_TAGS:-env=dev,app=3forge,role=worker,id=${DT_NODE_ID}}
