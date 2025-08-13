@@ -1,1 +1,22 @@
 
+
+/home/user/winserverops/frontend/scripts/start-local.cjs
+
+// Patch env before CRA starts
+if (process.env.WDS_ALLOWED_HOSTS === '') delete process.env.WDS_ALLOWED_HOSTS;
+process.env.HOST = process.env.HOST || '0.0.0.0';
+process.env.PORT = process.env.PORT || '9000';
+process.env.WDS_ALLOWED_HOSTS = process.env.WDS_ALLOWED_HOSTS || 'all';
+process.env.BROWSER = 'none';
+
+require('react-scripts/scripts/start');
+
+
+
+pdate package.json → change this:
+
+
+"scripts": {
+  "start": "node scripts/start-local.cjs",
+  "build": "react-scripts build"
+}
