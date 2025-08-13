@@ -1,11 +1,11 @@
-# ===== BEGIN: custom PATH for /efs shared runtimes =====
+# ===== BEGIN: Custom PATH and environment =====
 
 # Source system-wide bashrc if present
 if [ -f /etc/bashrc ]; then
   . /etc/bashrc
 fi
 
-# Add home bin paths if not already present
+# Ensure home bin paths are present exactly once
 [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && PATH="$HOME/.local/bin:$PATH"
 [[ ":$PATH:" != *":$HOME/bin:"*        ]] && PATH="$HOME/bin:$PATH"
 
@@ -13,12 +13,24 @@ fi
 [ -d /efs/dist/fsf/node.js/v22.15.0/exec/bin ] && PATH="/efs/dist/fsf/node.js/v22.15.0/exec/bin:$PATH"
 [ -d /efs/dist/python/core/3.13.5/exec/bin ]  && PATH="/efs/dist/python/core/3.13.5/exec/bin:$PATH"
 
-# Configure npm globals to install under your home
+# npm global installs go under your home (avoids sudo)
 export NPM_CONFIG_PREFIX="$HOME/.npm-global"
 [[ ":$PATH:" != *":$HOME/.npm-global/bin:"* ]] && PATH="$HOME/.npm-global/bin:$PATH"
 
+# Ensure `python` points to the same as `python3` (update only if needed)
+PY3="$(command -v python3 2>/dev/null)"
+if [ -n "$PY3" ]; then
+  CUR="$(readlink -f "$HOME/bin/python" 2>/dev/null || true)"
+  if [ "$CUR" != "$PY3" ]; then
+    mkdir -p "$HOME/bin"
+    ln -sf "$PY3" "$HOME/bin/python"
+  fi
+fi
+
 export PATH
+
 # ===== END =====
+
 
 
 
