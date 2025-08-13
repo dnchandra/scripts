@@ -1,107 +1,102 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+# Simple launcher for backend (uvicorn) and frontend (npm)
+set -eEo pipefail
 
-######### DYNAMIC CONFIG (override via env or backend/.env) #########
-# Base dir (defaults to this script's directory)
-BASE_DIR="${BASE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-BACKEND_DIR="${BACKEND_DIR:-$BASE_DIR/backend}"
-FRONTEND_DIR="${FRONTEND_DIR:-$BASE_DIR/frontend}"
+# --- Paths (edit if needed) ---
+BASE_DIR="/home/user/winserverops"
+BACKEND_DIR="$BASE_DIR/backend"
+FRONTEND_DIR="$BASE_DIR/frontend"
 
-# Virtualenv: set either VENV_NAME (relative) or VENV_DIR (absolute). VENV_DIR wins if set.
+# --- Python venv (name only; lives under backend/) ---
 VENV_NAME="${VENV_NAME:-osenv}"
-VENV_DIR="${VENV_DIR:-}"   # e.g. /opt/pyenvs/winops
+VENV_DIR="$BACKEND_DIR/$VENV_NAME"
 
-# FastAPI / Uvicorn
+# --- Ports ---
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+FRONTEND_PORT="${FRONTEND_PORT:-9000}"
+
+# --- FastAPI app path ---
 UVICORN_APP="${UVICORN_APP:-main:app}"
-UVICORN_HOST="${UVICORN_HOST:-0.0.0.0}"
-UVICORN_PORT="${UVICORN_PORT:-8000}"
-UVICORN_WORKERS="${UVICORN_WORKERS:-2}"
-UVICORN_RELOAD="${UVICORN_RELOAD:-false}"
 
-# Frontend
-NPM_SCRIPT="${NPM_SCRIPT:-}"                 # auto-detects if empty
-NODE_ENV="${NODE_ENV:-production}"
-FRONTEND_PORT_HINTS="${FRONTEND_PORT_HINTS:-5173 3000}"
-
-# Logs & PIDs
-LOG_DIR="${LOG_DIR:-$BASE_DIR/logs}"
-RUN_DIR="${RUN_DIR:-$BASE_DIR/run}"
+# --- Logs & PIDs ---
+LOG_DIR="$BASE_DIR/logs"
+RUN_DIR="$BASE_DIR/run"
 BACKEND_LOG="$LOG_DIR/backend.log"
 FRONTEND_LOG="$LOG_DIR/frontend.log"
 BACKEND_PID="$RUN_DIR/backend.pid"
 FRONTEND_PID="$RUN_DIR/frontend.pid"
 
-######### HELPERS #########
 msg() { printf "[%s] %s\n" "$(date '+%F %T')" "$*"; }
-die() { msg "ERROR: $*"; exit 1; }
 ensure_dirs() { mkdir -p "$LOG_DIR" "$RUN_DIR"; }
-
-load_dotenv() {
-  # Load optional backend/.env (KEY=VALUE per line)
-  local envfile="$BACKEND_DIR/.env"
-  if [[ -f "$envfile" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$envfile"
-    set +a
-    msg "Loaded env from $envfile"
-  fi
-}
-
-detect_venv() {
-  # Resolve VENV_DIR if not explicitly set
-  if [[ -n "$VENV_DIR" ]]; then return; fi
-  if [[ -d "$BACKEND_DIR/$VENV_NAME" ]]; then
-    VENV_DIR="$BACKEND_DIR/$VENV_NAME"
-  elif [[ -d "$BASE_DIR/$VENV_NAME" ]]; then
-    VENV_DIR="$BASE_DIR/$VENV_NAME"
-  else
-    die "Python venv not found. Set VENV_NAME (default '$VENV_NAME') correctly or provide VENV_DIR."
-  fi
-}
-
-activate_venv() {
-  detect_venv
-  local act="$VENV_DIR/bin/activate"
-  [[ -f "$act" ]] || die "Activate script not found at $act"
-  # shellcheck disable=SC1090
-  source "$act"
-  msg "Activated Python venv: $VENV_DIR"
-}
 
 is_running() {
   local pidfile="$1"
   [[ -f "$pidfile" ]] || return 1
-  local pid; pid="$(cat "$pidfile" 2>/dev/null || true)"
-  [[ -n "${pid:-}" ]] || return 1
+  local pid
+  pid="$(cat "$pidfile" 2>/dev/null || true)"
+  [[ -n "$pid" ]] || return 1
   kill -0 "$pid" 2>/dev/null
 }
 
-detect_npm_script() {
-  [[ -f "$FRONTEND_DIR/package.json" ]] || die "package.json not found in $FRONTEND_DIR"
-  [[ -n "$NPM_SCRIPT" ]] && return
-  if grep -q '"start"' "$FRONTEND_DIR/package.json"; then
-    NPM_SCRIPT="start"
-  elif grep -q '"dev"' "$FRONTEND_DIR/package.json"; then
-    NPM_SCRIPT="dev"
-  else
-    die "No 'start' or 'dev' script in $FRONTEND_DIR/package.json (set NPM_SCRIPT manually if needed)."
-  fi
-}
-
-check_port() {
+check_port_free() {
   local port="$1"
   if ss -ltn | awk '{print $4}' | grep -qE "[:.]$port$"; then
-    die "Port $port appears to be in use."
+    msg "ERROR: Port $port is already in use."
+    exit 1
   fi
 }
 
-hint_frontend_ports() {
-  for p in $FRONTEND_PORT_HINTS; do
-    if ss -ltn | awk '{print $4}' | grep -qE "[:.]$p$"; then
-      msg "Note: Port $p is occupied (frontend may still run on another port per config)."
-    fi
-  done
+start_backend() {
+  ensure_dirs
+  if is_running "$BACKEND_PID"; then
+    msg "Backend already running (pid $(cat "$BACKEND_PID"))."
+    return 0
+  fi
+
+  [[ -f "$VENV_DIR/bin/activate" ]] || { msg "ERROR: venv not found at $VENV_DIR"; exit 1; }
+
+  check_port_free "$BACKEND_PORT"
+  cd "$BACKEND_DIR"
+  # shellcheck disable=SC1090
+  source "$VENV_DIR/bin/activate"
+
+  msg "Starting backend: uvicorn $UVICORN_APP on 0.0.0.0:$BACKEND_PORT"
+  nohup uvicorn "$UVICORN_APP" --host 0.0.0.0 --port "$BACKEND_PORT" \
+    >>"$BACKEND_LOG" 2>&1 &
+
+  echo $! > "$BACKEND_PID"
+  sleep 1
+  if is_running "$BACKEND_PID"; then
+    msg "Backend started (pid $(cat "$BACKEND_PID")). Logs: $BACKEND_LOG"
+  else
+    msg "ERROR: Backend failed to start. See $BACKEND_LOG"
+    exit 1
+  fi
+}
+
+start_frontend() {
+  ensure_dirs
+  if is_running "$FRONTEND_PID"; then
+    msg "Frontend already running (pid $(cat "$FRONTEND_PID"))."
+    return 0
+  fi
+
+  check_port_free "$FRONTEND_PORT"
+  cd "$FRONTEND_DIR"
+
+  # Force port 9000 and bind to all interfaces
+  msg "Starting frontend: npm start on 0.0.0.0:$FRONTEND_PORT"
+  HOST=0.0.0.0 PORT="$FRONTEND_PORT" nohup npm start >>"$FRONTEND_LOG" 2>&1 &
+
+  echo $! > "$FRONTEND_PID"
+  sleep 1
+  if is_running "$FRONTEND_PID"; then
+    msg "Frontend started (pid $(cat "$FRONTEND_PID")). Logs: $FRONTEND_LOG"
+    msg "Access: http://<server-ip>:$FRONTEND_PORT"
+  else
+    msg "ERROR: Frontend failed to start. See $FRONTEND_LOG"
+    exit 1
+  fi
 }
 
 stop_service() {
@@ -110,7 +105,7 @@ stop_service() {
     local pid; pid="$(cat "$pidfile")"
     msg "Stopping $name (pid $pid)..."
     kill "$pid" 2>/dev/null || true
-    for _ in {1..20}; do is_running "$pidfile" || break; sleep 0.25; done
+    for _ in {1..20}; do is_running "$pidfile" || break; sleep 0.2; done
     if is_running "$pidfile"; then
       msg "$name still running, sending SIGKILL..."
       kill -9 "$pid" 2>/dev/null || true
@@ -118,8 +113,8 @@ stop_service() {
     rm -f "$pidfile"
     msg "$name stopped."
   else
-    msg "$name is not running."
-    rm -f "$pidfile" || true
+    msg "$name not running."
+    rm -f "$pidfile" 2>/dev/null || true
   fi
 }
 
@@ -132,67 +127,21 @@ status_service() {
   fi
 }
 
-######### ACTIONS #########
-start_backend() {
-  ensure_dirs
-  if is_running "$BACKEND_PID"; then
-    msg "Backend already running (pid $(cat "$BACKEND_PID"))."; return 0; fi
-  load_dotenv
-  check_port "$UVICORN_PORT"
-  cd "$BACKEND_DIR"
-  activate_venv
-  msg "Starting backend: uvicorn $UVICORN_APP --host $UVICORN_HOST --port $UVICORN_PORT (workers=$UVICORN_WORKERS, reload=$UVICORN_RELOAD)"
-  nohup uvicorn "$UVICORN_APP" \
-    --host "$UVICORN_HOST" \
-    --port "$UVICORN_PORT" \
-    ${UVICORN_RELOAD:+--reload} \
-    --workers "$UVICORN_WORKERS" \
-    >>"$BACKEND_LOG" 2>&1 &
-  echo $! > "$BACKEND_PID"
-  sleep 1
-  is_running "$BACKEND_PID" && msg "Backend started (pid $(cat "$BACKEND_PID")). Logs: $BACKEND_LOG" || die "Backend failed to start. See $BACKEND_LOG"
-}
-
-start_frontend() {
-  ensure_dirs
-  if is_running "$FRONTEND_PID"; then
-    msg "Frontend already running (pid $(cat "$FRONTEND_PID"))."; return 0; fi
-  detect_npm_script
-  cd "$FRONTEND_DIR"
-  if [[ ! -d node_modules ]]; then
-    msg "node_modules not found. Running 'npm ci'..."
-    npm ci >>"$FRONTEND_LOG" 2>&1 || { tail -n 80 "$FRONTEND_LOG"; die "npm ci failed."; }
-  fi
-  hint_frontend_ports
-  msg "Starting frontend: npm run $NPM_SCRIPT (NODE_ENV=$NODE_ENV)"
-  NODE_ENV="$NODE_ENV" nohup npm run "$NPM_SCRIPT" >>"$FRONTEND_LOG" 2>&1 &
-  echo $! > "$FRONTEND_PID"
-  sleep 1
-  is_running "$FRONTEND_PID" && msg "Frontend started (pid $(cat "$FRONTEND_PID")). Logs: $FRONTEND_LOG" || die "Frontend failed to start. See $FRONTEND_LOG"
-}
-
-start_all()   { start_backend; start_frontend; }
-stop_all()    { stop_service "backend" "$BACKEND_PID"; stop_service "frontend" "$FRONTEND_PID"; }
-status_all()  { status_service "backend" "$BACKEND_PID" "$BACKEND_LOG"; status_service "frontend" "$FRONTEND_LOG"; }
-restart_all() { stop_all; start_all; }
-
 usage() {
   cat <<EOF
-Usage: $(basename "$0") {start|stop|restart|status|start:backend|stop:backend|start:frontend|stop:frontend}
+Usage: $(basename "$0") {start|stop|status|start:backend|stop:backend|start:frontend|stop:frontend}
 
-Key env overrides:
-  BASE_DIR=/home/user/winserverops
-  VENV_NAME=osenv     # or set VENV_DIR=/abs/path/to/venv
-  UVICORN_APP=main:app UVICORN_PORT=9000 UVICORN_RELOAD=true
-  NPM_SCRIPT=start NODE_ENV=production FRONTEND_PORT_HINTS="4173 5173 3000"
+Defaults:
+  Backend: uvicorn $UVICORN_APP on port $BACKEND_PORT
+  Frontend: npm start on port $FRONTEND_PORT
+  Venv: $VENV_DIR  (set VENV_NAME to change)
 EOF
 }
 
 case "${1:-}" in
-  start)          start_all ;;
-  stop)           stop_all ;;
-  restart)        restart_all ;;
-  status)         status_all ;;
+  start)          start_backend; start_frontend ;;
+  stop)           stop_service "backend" "$BACKEND_PID"; stop_service "frontend" "$FRONTEND_PID" ;;
+  status)         status_service "backend" "$BACKEND_PID" "$BACKEND_LOG"; status_service "frontend" "$FRONTEND_PID" "$FRONTEND_LOG" ;;
   start:backend)  start_backend ;;
   stop:backend)   stop_service "backend" "$BACKEND_PID" ;;
   start:frontend) start_frontend ;;
