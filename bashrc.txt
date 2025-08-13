@@ -1,0 +1,21 @@
+# ===== BEGIN: custom PATH for /efs shared runtimes =====
+
+# Source system-wide bashrc if present
+if [ -f /etc/bashrc ]; then
+  . /etc/bashrc
+fi
+
+# Add home bin paths if not already present
+[[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && PATH="$HOME/.local/bin:$PATH"
+[[ ":$PATH:" != *":$HOME/bin:"*        ]] && PATH="$HOME/bin:$PATH"
+
+# Add /efs Node & Python first if directories exist
+[ -d /efs/dist/fsf/node.js/v22.15.0/exec/bin ] && PATH="/efs/dist/fsf/node.js/v22.15.0/exec/bin:$PATH"
+[ -d /efs/dist/python/core/3.13.5/exec/bin ]  && PATH="/efs/dist/python/core/3.13.5/exec/bin:$PATH"
+
+# Configure npm globals to install under your home
+export NPM_CONFIG_PREFIX="$HOME/.npm-global"
+[[ ":$PATH:" != *":$HOME/.npm-global/bin:"* ]] && PATH="$HOME/.npm-global/bin:$PATH"
+
+export PATH
+# ===== END =====
