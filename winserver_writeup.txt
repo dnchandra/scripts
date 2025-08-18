@@ -1,0 +1,13 @@
+Current State
+Post-patching and application release activities currently involve heavy manual effort. Teams log into multiple servers to check Windows services, installed patches, IIS configurations, and registry settings. For datacenter isolation or DR drills, several people are needed to validate hundreds of servers. This process often takes days, is repetitive, and leaves room for errors, delaying patching cycles and release timelines.
+What We Implemented with WinServerOps_Studio
+WinServerOps_Studio automates these operational checks through a single framework. It remotely connects to servers, executes validations in parallel, and consolidates results into a central dashboard. With one-click execution, it covers service status, patch compliance, IIS health, and configuration checks, ensuring consistency and reducing dependency on manual validation.
+Technologies Used:
+•	Backend: FastAPI (Python)
+•	Frontend: ReactJS with Tailwind CSS
+•	Automation Scripts: PowerShell over WinRM
+•	Data Handling: JSON-based inventory and results
+•	Deployment: Works across Windows servers, Linux hosts, and containerized environments
+Benefits and Savings
+With this implementation, post-patching validation that earlier took ~25 hours now completes in ~2 hours. Datacenter isolation testing, which required ~80 hours, is reduced to ~20 hours. Application release verification has dropped from 3–4 hours to under an hour. Overall, WinServerOps_Studio shortens validation time by 60–90%, eliminates manual errors, and provides faster, safer, and more reliable patching, DR testing, and release cycles.
+
