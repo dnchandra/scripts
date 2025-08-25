@@ -141,12 +141,16 @@ def run_powershell_script_remote(
     """
     target = resolve_server_to_ip(server, app_id)
     
-    # Try authentication methods avoiding MD4 issues (Basic first, then HTTPS)
+    # Try authentication methods completely avoiding NTLM/MD4
     auth_errors = []
     session = None
     
-    # Method 1: Basic authentication (avoids MD4 completely)
+    # Method 1: Basic authentication only (completely bypass NTLM)
     try:
+        # Explicitly disable NTLM by not importing requests-ntlm transport
+        import requests
+        from requests.auth import HTTPBasicAuth
+        
         session = winrm.Session(
             f"http://{target}:5985/wsman",
             auth=(username, password),
@@ -155,8 +159,9 @@ def run_powershell_script_remote(
             read_timeout_sec=180,
             operation_timeout_sec=60
         )
-        # Test the session
-        test_result = session.run_ps("echo 'test'")
+        
+        # Test the session with a minimal command
+        test_result = session.run_ps("$true")
         if test_result.status_code != 0:
             session = None
             auth_errors.append("Basic HTTP: Test command failed")
@@ -175,33 +180,15 @@ def run_powershell_script_remote(
                 read_timeout_sec=180,
                 operation_timeout_sec=60
             )
+            
             # Test the session
-            test_result = session.run_ps("echo 'test'")
+            test_result = session.run_ps("$true")
             if test_result.status_code != 0:
                 session = None
                 auth_errors.append("Basic HTTPS: Test command failed")
         except Exception as e:
             session = None
             auth_errors.append(f"Basic HTTPS: {str(e)}")
-    
-    # Method 3: Kerberos if available (modern, no MD4)
-    if session is None:
-        try:
-            session = winrm.Session(
-                f"http://{target}:5985/wsman",
-                auth=(username, password),
-                transport="kerberos",
-                read_timeout_sec=180,
-                operation_timeout_sec=60
-            )
-            # Test the session
-            test_result = session.run_ps("echo 'test'")
-            if test_result.status_code != 0:
-                session = None
-                auth_errors.append("Kerberos: Test command failed")
-        except Exception as e:
-            session = None
-            auth_errors.append(f"Kerberos: {str(e)}")
 
     if session is None:
         raise Exception(f"All authentication methods failed for {target}: {'; '.join(auth_errors)}")
