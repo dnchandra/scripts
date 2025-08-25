@@ -141,16 +141,17 @@ def run_powershell_script_remote(
     """
     target = resolve_server_to_ip(server, app_id)
     
-    # Try different authentication methods in order of compatibility
+    # Try authentication methods avoiding MD4 issues (Basic first, then HTTPS)
     auth_errors = []
     session = None
     
-    # Method 1: Standard NTLM (most compatible)
+    # Method 1: Basic authentication (avoids MD4 completely)
     try:
         session = winrm.Session(
             f"http://{target}:5985/wsman",
             auth=(username, password),
-            transport="ntlm",
+            transport="basic",
+            server_cert_validation="ignore",
             read_timeout_sec=180,
             operation_timeout_sec=60
         )
@@ -158,16 +159,16 @@ def run_powershell_script_remote(
         test_result = session.run_ps("echo 'test'")
         if test_result.status_code != 0:
             session = None
-            auth_errors.append("NTLM: Test command failed")
+            auth_errors.append("Basic HTTP: Test command failed")
     except Exception as e:
         session = None
-        auth_errors.append(f"NTLM: {str(e)}")
+        auth_errors.append(f"Basic HTTP: {str(e)}")
     
-    # Method 2: Basic authentication if NTLM fails
+    # Method 2: HTTPS Basic if HTTP Basic fails
     if session is None:
         try:
             session = winrm.Session(
-                f"http://{target}:5985/wsman",
+                f"https://{target}:5986/wsman",
                 auth=(username, password),
                 transport="basic",
                 server_cert_validation="ignore",
@@ -178,19 +179,18 @@ def run_powershell_script_remote(
             test_result = session.run_ps("echo 'test'")
             if test_result.status_code != 0:
                 session = None
-                auth_errors.append("Basic: Test command failed")
+                auth_errors.append("Basic HTTPS: Test command failed")
         except Exception as e:
             session = None
-            auth_errors.append(f"Basic: {str(e)}")
+            auth_errors.append(f"Basic HTTPS: {str(e)}")
     
-    # Method 3: HTTPS NTLM if HTTP methods fail
+    # Method 3: Kerberos if available (modern, no MD4)
     if session is None:
         try:
             session = winrm.Session(
-                f"https://{target}:5986/wsman",
+                f"http://{target}:5985/wsman",
                 auth=(username, password),
-                transport="ntlm",
-                server_cert_validation="ignore",
+                transport="kerberos",
                 read_timeout_sec=180,
                 operation_timeout_sec=60
             )
@@ -198,10 +198,10 @@ def run_powershell_script_remote(
             test_result = session.run_ps("echo 'test'")
             if test_result.status_code != 0:
                 session = None
-                auth_errors.append("HTTPS NTLM: Test command failed")
+                auth_errors.append("Kerberos: Test command failed")
         except Exception as e:
             session = None
-            auth_errors.append(f"HTTPS NTLM: {str(e)}")
+            auth_errors.append(f"Kerberos: {str(e)}")
 
     if session is None:
         raise Exception(f"All authentication methods failed for {target}: {'; '.join(auth_errors)}")
