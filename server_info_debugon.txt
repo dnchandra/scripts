@@ -292,17 +292,11 @@ def run_powershell_script_remote(
     hostname_target = server
     ip_target = resolve_server_to_ip(server, app_id)
 
-    # Restore original fallback behavior:
-    # 1) Hostname + Kerberos (HTTP then HTTPS)
-    # 2) Hostname + NTLM (HTTP then HTTPS)
-    # 3) IP + NTLM (HTTP then HTTPS) — last-resort when DNS or Kerberos name resolution differs
+    # Simplified priority per user: prefer NTLM on hostname over HTTP first, then NTLM HTTPS.
+    # Remove legacy fallbacks (Kerberos and IP-based attempts) to keep behavior deterministic.
     attempts: List[tuple] = [
-        (hostname_target, "http", 5985, "kerberos", True),
-        (hostname_target, "https", 5986, "kerberos", False),
         (hostname_target, "http", 5985, "ntlm", True),
         (hostname_target, "https", 5986, "ntlm", False),
-        (ip_target, "http", 5985, "ntlm", True),
-        (ip_target, "https", 5986, "ntlm", False),
     ]
 
     session = None
@@ -782,19 +776,64 @@ def get_registry_info(req: RegistryInfoRequest):
 def get_iis_info(req: ServerInfoRequest):
     script = read_script("get_iis_websites.ps1")
     result = run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId)
+
+    stdout = result.get("stdout", "") or ""
+    stderr = result.get("stderr", "") or ""
+    rows = []
+    parse_error = None
     try:
-        stdout = result.get("stdout", "")
-        rows = json.loads(stdout) if stdout else []
-        if isinstance(rows, dict):
-            rows = [rows]
+        parsed = json.loads(stdout) if stdout else []
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        rows = parsed
     except Exception as e:
-        rows = []
-        result["stderr"] = f"Failed to parse IIS websites output: {e}"
-    return {
+        # Attempt to salvage by extracting a JSON substring from noisy output
+        parse_error = e
+        json_sub = _extract_json_from_text(stdout)
+        if json_sub:
+            try:
+                parsed = json.loads(json_sub)
+                if isinstance(parsed, dict):
+                    parsed = [parsed]
+                rows = parsed
+            except Exception as e2:
+                parse_error = e2
+                rows = []
+        else:
+            rows = []
+
+    resp = {
         "rows": rows,
-        "stderr": result.get("stderr", ""),
+        "RawOutput": stdout,
+        "stderr": stderr,
         "returncode": result.get("returncode", 0),
     }
+
+    if parse_error:
+        # Append parse error text but preserve original stderr content
+        try:
+            resp["stderr"] = (resp.get("stderr") or "") + f"; Failed to parse IIS websites output: {parse_error}"
+        except Exception:
+            pass
+
+    # Mark minor failures where returncode is 0 but stderr contains warnings
+    try:
+        if resp.get("returncode", 0) == 0 and resp.get("stderr", ""):
+            resp["minorFailure"] = True
+    except Exception:
+        pass
+
+    # Include debugAttempts and successAttempt when available
+    if os.environ.get("WSOPS_DEBUG") == "1":
+        try:
+            if "debugAttempts" in result:
+                resp["debugAttempts"] = result.get("debugAttempts")
+            if "successAttempt" in result:
+                resp["successAttempt"] = result.get("successAttempt")
+        except Exception:
+            pass
+
+    return resp
 
 
 @router.post("/api/server/os_patching_parallel")
@@ -1339,7 +1378,44 @@ def get_webconfig(req: WebConfigRequest):
     script = ps_script_content
     # Pass folder and maxchars as positional args to the remote ScriptBlock
     params = [req.folderPath, maxchars]
-    return run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId, params=params)
+    result = run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId, params=params)
+
+    # Normalize response: always include parsed JSON (if any) plus stderr and raw output so
+    # frontend can show collected details even when minor errors occurred.
+    stdout = result.get("stdout", "") or ""
+    stderr = result.get("stderr", "") or ""
+    parsed = None
+    try:
+        parsed = json.loads(stdout) if stdout else None
+    except Exception:
+        # Keep parsed as None but preserve RawOutput for debugging
+        parsed = None
+
+    resp = {
+        "AppID": req.appId,
+        "Server": req.serverName,
+        "RawOutput": stdout,
+        "stderr": stderr,
+        "returncode": result.get("returncode", 0),
+    }
+    if parsed is not None:
+        resp["Data"] = parsed
+
+    # Mark minor failures separately so UI can choose popup vs blocking error
+    if resp.get("returncode", 0) == 0 and stderr:
+        resp["minorFailure"] = True
+
+    # Include debugAttempts when available (keeps parity with other endpoints)
+    if os.environ.get("WSOPS_DEBUG") == "1":
+        try:
+            if "debugAttempts" in result:
+                resp["debugAttempts"] = result.get("debugAttempts")
+            if "successAttempt" in result:
+                resp["successAttempt"] = result.get("successAttempt")
+        except Exception:
+            pass
+
+    return resp
 
 
 @router.post("/api/server/gac")
