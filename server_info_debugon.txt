@@ -1,0 +1,1496 @@
+# server_info.py  — fixed without changing functionality
+
+from __future__ import annotations
+
+import base64
+import io
+import json
+import os
+import socket
+from typing import Optional, List
+
+import winrm
+import logging
+import struct
+import math
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, constr, conint, field_validator
+
+import re
+
+# Pydantic constrained type aliases (avoid calling in annotations directly)
+AppIdType = constr(strip_whitespace=True, min_length=1, max_length=64)
+ServerNameType = constr(strip_whitespace=True, min_length=1, max_length=253)
+UserNameType = constr(strip_whitespace=True, min_length=1, max_length=128)
+PasswordType = constr(min_length=1, max_length=512)
+
+
+# ---------- router ----------
+router = APIRouter()
+logger = logging.getLogger("uvicorn.error")
+if os.environ.get("WSOPS_DEBUG") == "1":
+    try:
+        logger.setLevel(logging.DEBUG)
+    except Exception:
+        pass
+
+
+# ---------- helpers ----------
+
+
+def _patch_ntlm_md4_if_needed():
+    """Monkeypatch ntlm_auth to use our MD4 when hashlib lacks it."""
+    try:
+        import hashlib
+        try:
+            hashlib.new('md4', b'test')
+            return  # MD4 supported; nothing to do
+        except Exception:
+            pass
+        import ntlm_auth.compute_hash as _ch  # type: ignore
+        import binascii, re
+
+        def _md4_fallback_digest(data: bytes) -> bytes:
+            """Fallback MD4 implementation using pure Python if hashlib lacks MD4."""
+            try:
+                import hashlib
+                return hashlib.new('md4', data).digest()
+            except Exception:
+                # Pure Python MD4 implementation (minimal, for NTLM only)
+                # Source: https://github.com/dlitz/py-md4 (public domain)
+                import struct
+
+                # Define leftrotate function
+                def leftrotate(x, n):
+                    x &= 0xFFFFFFFF
+                    return ((x << n) | (x >> (32 - n))) & 0xFFFFFFFF
+
+                # Padding
+                orig_len_in_bits = (8 * len(data)) & 0xffffffffffffffff
+                data += b'\x80'
+                while (len(data) % 64) != 56:
+                    data += b'\x00'
+                data += struct.pack('<Q', orig_len_in_bits)
+
+                # Initial hash values
+                h = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476]
+
+                # Process each 64-byte chunk
+                for chunk_ofs in range(0, len(data), 64):
+                    X = list(struct.unpack('<16I', data[chunk_ofs:chunk_ofs+64]))
+                    a, b, c, d = h
+
+                    # Round 1
+                    S = [3, 7, 11, 19]
+                    for i in range(16):
+                        k = i
+                        s = S[i % 4]
+                        f = (b & c) | (~b & d)
+                        a = leftrotate((a + f + X[k]) & 0xFFFFFFFF, s)
+                        a, b, c, d = d, a, b, c
+
+                    # Round 2
+                    S = [3, 5, 9, 13]
+                    for i in range(16):
+                        k = (i % 4) * 4 + (i // 4)
+                        s = S[i % 4]
+                        f = (b & c) | (b & d) | (c & d)
+                        a = leftrotate((a + f + X[k] + 0x5a827999) & 0xFFFFFFFF, s)
+                        a, b, c, d = d, a, b, c
+
+                    # Round 3
+                    S = [3, 9, 11, 15]
+                    order = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15]
+                    for i in range(16):
+                        k = order[i]
+                        s = S[i % 4]
+                        f = b ^ c ^ d
+                        a = leftrotate((a + f + X[k] + 0x6ed9eba1) & 0xFFFFFFFF, s)
+                        a, b, c, d = d, a, b, c
+
+                    h[0] = (h[0] + a) & 0xFFFFFFFF
+                    h[1] = (h[1] + b) & 0xFFFFFFFF
+                    h[2] = (h[2] + c) & 0xFFFFFFFF
+                    h[3] = (h[3] + d) & 0xFFFFFFFF
+
+                return struct.pack('<4I', *h)
+
+        def _ntowfv1_patched(password):
+            if re.match(r'^[a-fA-F\d]{32}:[a-fA-F\d]{32}$', password):
+                return binascii.unhexlify(password.split(':')[1])
+            return _md4_fallback_digest(password.encode('utf-16-le'))
+
+        _ch._ntowfv1 = _ntowfv1_patched
+    except Exception:
+        # Best effort; if patching fails, original error will surface
+        pass
+
+
+_patch_ntlm_md4_if_needed()
+
+
+def ps_lit(s: str) -> str:
+    """Make a safe single-quoted PowerShell literal."""
+    if s is None:
+        return ""
+    # Convert to str and remove problematic control characters (keep printable only)
+    s2 = str(s)
+    # Replace any control chars (codepoints < 32 except tab/newline) with spaces
+    s2 = "".join(ch if (ord(ch) >= 32 or ch in ['\t']) else ' ' for ch in s2)
+    # Collapse newlines and carriage returns
+    s2 = s2.replace('\r', ' ').replace('\n', ' ')
+    # Escape single quotes by doubling them for PowerShell single-quoted strings
+    s2 = s2.replace("'", "''")
+    # Trim long values to a reasonable length to avoid huge command lines
+    if len(s2) > 1024:
+        s2 = s2[:1024]
+    return s2
+
+
+def ps_value_literal(v) -> str:
+    """Return a PowerShell literal for a Python value (string, number, bool, None, list).
+
+    Strings are single-quoted and escaped using ps_lit; booleans and None are returned
+    as $true/$false/$null; numbers are returned as-is. Lists become @(...).
+    """
+    if v is None:
+        return "$null"
+    if isinstance(v, bool):
+        return "$true" if v else "$false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, (list, tuple)):
+        inner = ", ".join(ps_value_literal(x) for x in v)
+        return "@(" + inner + ")"
+    # fallback to string
+    # Use single-quoted PowerShell literal
+    return "'" + ps_lit(str(v)) + "'"
+
+
+def read_script(script_name: str) -> str:
+    """Read a PowerShell script from backend/scripts."""
+    script_path = os.path.join(os.path.dirname(__file__), "..", "scripts", script_name)
+    with open(script_path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _clean_stdout(s: bytes | str) -> str:
+    if not s:
+        return ""
+    if isinstance(s, bytes):
+        s = s.decode(errors="replace")
+    # Remove very long output to avoid memory/CPU issues
+    MAX_OUT_CHARS = 1_000_000  # 1MB
+    if len(s) > MAX_OUT_CHARS:
+        s = s[:MAX_OUT_CHARS] + "\n...[TRUNCATED]"
+
+    lines = s.splitlines()
+    filtered = []
+    for ln in lines:
+        t = ln.strip()
+        # remove CLIXML markers and common 'Preparing modules' progress messages
+        if t.startswith("#< CLIXML"):
+            continue
+        if t.startswith("<Objs") or t.startswith("<Obj") or t.startswith("</Objs>"):
+            continue
+        if "Preparing modules for first use" in t:
+            continue
+        # remove non-printable characters from each line
+        ln_clean = "".join(ch if ord(ch) >= 32 or ch == '\t' else ' ' for ch in ln)
+        filtered.append(ln_clean)
+    return "\n".join(filtered).strip()
+
+
+def _extract_json_from_text(s: str) -> str | None:
+    """Try to extract the first JSON array/object substring from a noisy stdout string.
+
+    Returns the JSON substring if found and balanced, otherwise None.
+    """
+    if not s or not isinstance(s, str):
+        return None
+    # Find first opening brace or bracket
+    start_idx = None
+    start_ch = None
+    for i, ch in enumerate(s):
+        if ch == '{' or ch == '[':
+            start_idx = i
+            start_ch = ch
+            break
+    if start_idx is None:
+        return None
+
+    # Choose matching char
+    match = '}' if start_ch == '{' else ']'
+    depth = 0
+    for j in range(start_idx, len(s)):
+        c = s[j]
+        if c == start_ch:
+            depth += 1
+        elif c == match:
+            depth -= 1
+            if depth == 0:
+                candidate = s[start_idx : j + 1]
+                # Quick sanity: must parse as JSON
+                try:
+                    json.loads(candidate)
+                    return candidate
+                except Exception:
+                    return None
+    return None
+
+
+def resolve_server_to_ip(server_name: str, app_id: str | None = None) -> str:
+    # Try DNS/hosts resolution first
+    try:
+        return socket.gethostbyname(server_name)
+    except Exception:
+        pass
+    # Fallback: look up in inventory
+    inventory_path = os.path.join(os.path.dirname(__file__), "..", "app", "inventory.json")
+    try:
+        with open(inventory_path, encoding="utf-8") as f:
+            inventory = json.load(f)
+        if app_id and app_id in inventory:
+            servers = inventory[app_id].get("servers", [])
+        else:
+            servers = [srv for app in inventory.values() for srv in app.get("servers", [])]
+        for srv in servers:
+            if srv.get("name", "").lower() == server_name.lower() and srv.get("ip"):
+                return srv["ip"]
+    except Exception:
+        pass
+    return server_name  # fallback to original name
+
+
+def _probe(session: "winrm.Session") -> bool:
+    """Quick round-trip to confirm the channel is usable."""
+    try:
+        r = session.run_cmd("hostname")
+        return r.status_code == 0
+    except Exception:
+        return False
+
+
+def run_powershell_script_remote(
+    server: str,
+    username: str,
+    password: str,
+    script: str,
+    app_id: str | None = None,
+    params: dict | list | tuple | None = None,
+):
+    """Run a PowerShell script remotely via WinRM.
+
+    Keeps original behavior/shape but improves connection strategy:
+
+    Prefer hostname + Kerberos first (HTTP then HTTPS), then hostname + NTLM,
+    then IP + NTLM (as your original code did). HTTPS uses cert-ignore so
+    self-signed endpoints are usable. Returns same dict shape.
+    """
+    # Prefer the provided name for Kerberos; IP only for NTLM fallback
+    hostname_target = server
+    ip_target = resolve_server_to_ip(server, app_id)
+
+    # Restore original fallback behavior:
+    # 1) Hostname + Kerberos (HTTP then HTTPS)
+    # 2) Hostname + NTLM (HTTP then HTTPS)
+    # 3) IP + NTLM (HTTP then HTTPS) — last-resort when DNS or Kerberos name resolution differs
+    attempts: List[tuple] = [
+        (hostname_target, "http", 5985, "kerberos", True),
+        (hostname_target, "https", 5986, "kerberos", False),
+        (hostname_target, "http", 5985, "ntlm", True),
+        (hostname_target, "https", 5986, "ntlm", False),
+        (ip_target, "http", 5985, "ntlm", True),
+        (ip_target, "https", 5986, "ntlm", False),
+    ]
+
+    session = None
+    last_err: Optional[Exception] = None
+    attempts_results: List[dict] = []
+    success_attempt: dict | None = None
+
+    for tgt, scheme, port, transport, verify in attempts:
+        try:
+            logger.debug(f"Attempting WinRM connection to {tgt} via {scheme}:{port} transport={transport} verify={verify}")
+        except Exception:
+            pass
+        try:
+            endpoint = f"{scheme}://{tgt}:{port}/wsman"
+            s = winrm.Session(
+                endpoint,
+                auth=(username, password),
+                transport=transport,
+                server_cert_validation=("validate" if verify else "ignore"),
+            )
+            # Probe the session to confirm it's usable. If probe() returns False
+            # set last_err so callers and logs see a meaningful failure instead of None.
+            try:
+                ok = _probe(s)
+            except Exception as pe:
+                ok = False
+                last_err = pe
+                attempts_results.append({
+                    "target": tgt,
+                    "endpoint": endpoint,
+                    "transport": transport,
+                    "verify": verify,
+                    "status": "probe_exception",
+                    "error": str(pe),
+                })
+                try:
+                    logger.error(f"WinRM probe raised exception for {endpoint}: {pe}")
+                except Exception:
+                    pass
+
+            if ok:
+                session = s
+                # Use INFO so successful connections are visible in uvicorn when running at INFO level
+                try:
+                    logger.info(f"WinRM session established to {endpoint} using transport={transport}")
+                except Exception:
+                    pass
+                success_attempt = {
+                    "target": tgt,
+                    "endpoint": endpoint,
+                    "transport": transport,
+                    "verify": verify,
+                }
+                attempts_results.append({
+                    "target": tgt,
+                    "endpoint": endpoint,
+                    "transport": transport,
+                    "verify": verify,
+                    "status": "success",
+                })
+                break
+            else:
+                # Probe failed (no exception from Session creation). Record a helpful error.
+                if last_err is None:
+                    last_err = Exception(f"WinRM probe failed (non-zero response) for {endpoint}")
+                attempts_results.append({
+                    "target": tgt,
+                    "endpoint": endpoint,
+                    "transport": transport,
+                    "verify": verify,
+                    "status": "probe_failed",
+                    "error": str(last_err),
+                })
+                try:
+                    logger.error(f"WinRM probe failed for {endpoint} using transport={transport}: {last_err}")
+                except Exception:
+                    pass
+                # continue to next attempt
+        except Exception as e:
+            last_err = e
+            attempts_results.append({
+                "target": tgt,
+                "endpoint": f"{scheme}://{tgt}:{port}/wsman",
+                "transport": transport,
+                "verify": verify,
+                "status": "session_exception",
+                "error": str(e),
+            })
+            # Log detailed exception for debugging authentication/connect issues
+            try:
+                logger.error(f"WinRM connection attempt failed to {tgt} ({scheme}:{port}) transport={transport}: {e}")
+            except Exception:
+                pass
+            continue
+
+    if session is None:
+        # Preserve your original failure semantics (return error in body, not raise)
+        try:
+            logger.error(f"All WinRM connection attempts failed for {server}. last error: {last_err}")
+        except Exception:
+            pass
+        resp = {"stdout": "", "stderr": f"WinRM connection failed for {server}: {last_err}", "returncode": -1}
+        if os.environ.get("WSOPS_DEBUG") == "1":
+            try:
+                resp["debugAttempts"] = attempts_results
+            except Exception:
+                pass
+        return resp
+
+    try:
+        # Prepare raw script content and any argument list without wrapping twice
+        raw_script = script
+        arg_list_text = None
+        if params is not None:
+            if isinstance(params, (list, tuple)):
+                # Scripts with a param(...) block accept positional arguments
+                arg_list_text = ", ".join(ps_value_literal(x) for x in params)
+                raw_script = script
+            elif isinstance(params, dict):
+                # Prepend named variables for scripts that expect variables instead of param()
+                prefix = "".join(f"${k} = {ps_value_literal(v)}; " for k, v in params.items())
+                raw_script = prefix + "\n" + script
+
+        # If script is very large, upload it in chunks to a temp file on the remote host and execute that file.
+        # Use conservative inline threshold to avoid WinRM/PowerShell command line limits.
+        # Larger scripts are uploaded to a temp .ps1 and executed by path.
+        MAX_INLINE = 3000
+        try:
+            if len(raw_script) > MAX_INLINE:
+                import uuid
+                # remote temp paths
+                rnd = uuid.uuid4().hex
+                remote_ps1 = f"C:\\Windows\\Temp\\wsops_script_{rnd}.ps1"
+
+                # encode script as base64 (safe ASCII)
+                b64 = base64.b64encode(raw_script.encode("utf-8")).decode("ascii")
+
+                # ensure remote files are removed before starting
+                try:
+                    session.run_ps(f"if (Test-Path '{remote_ps1}') {{ Remove-Item -Path '{remote_ps1}' -Force }}")
+                except Exception:
+                    pass
+
+                # Write base64 to a temp .txt in small chunks to avoid command length limits
+                remote_b64 = f"C:\\Windows\\Temp\\wsops_b64_{rnd}.txt"
+                try:
+                    session.run_ps(f"if (Test-Path '{remote_b64}') {{ Remove-Item -Path '{remote_b64}' -Force }}")
+                except Exception:
+                    pass
+                # Create empty file
+                session.run_ps(f"'' | Out-File -FilePath '{remote_b64}' -Encoding ascii -NoNewline")
+                CHUNK = 1500
+                for i in range(0, len(b64), CHUNK):
+                    chunk = b64[i:i+CHUNK]
+                    # Base64 doesn't contain quotes normally, but escape just in case
+                    chunk_escaped = chunk.replace("'", "''")
+                    append_cmd = f"Add-Content -Path '{remote_b64}' -Value '{chunk_escaped}' -Encoding ascii -NoNewline"
+                    session.run_ps(append_cmd)
+
+                # Decode into script file and remove the b64 temp
+                decode_cmd = (
+                    f"$b = Get-Content -Raw -Path '{remote_b64}'; "
+                    f"[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b)) | Out-File -FilePath '{remote_ps1}' -Encoding utf8; "
+                    f"Remove-Item -Path '{remote_b64}' -Force"
+                )
+                session.run_ps(decode_cmd)
+
+                # Execute the remote ps1 and capture output (pass args if provided)
+                if arg_list_text is not None:
+                    exec_cmd = f"$argsList = @({arg_list_text}); & '{remote_ps1}' @argsList"
+                else:
+                    exec_cmd = f"& '{remote_ps1}'"
+                exec_res = session.run_ps(exec_cmd)
+                raw_stdout = exec_res.std_out or b""
+                raw_stderr = exec_res.std_err or b""
+                stdout = _clean_stdout(raw_stdout)
+                stderr = _clean_stdout(raw_stderr)
+                # cleanup the remote script file (best-effort)
+                try:
+                    session.run_ps(f"Remove-Item -Path '{remote_ps1}' -Force")
+                except Exception:
+                    pass
+                # Attempt to extract JSON substring if present to make parsing robust
+                json_sub = _extract_json_from_text(stdout)
+                if json_sub:
+                    stdout = json_sub
+
+                ret = {"stdout": stdout, "stderr": stderr, "returncode": exec_res.status_code}
+                if os.environ.get("WSOPS_DEBUG") == "1":
+                    try:
+                        ret["raw_stdout_b64"] = base64.b64encode(raw_stdout).decode("ascii")
+                        ret["raw_stderr_b64"] = base64.b64encode(raw_stderr).decode("ascii")
+                        try:
+                            ret["debugAttempts"] = attempts_results
+                        except Exception:
+                            pass
+                        try:
+                            if success_attempt is not None:
+                                ret["successAttempt"] = success_attempt
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                return ret
+            else:
+                # Execute inline via a ScriptBlock to avoid parsing quirks
+                if arg_list_text is not None:
+                    inline_cmd = (
+                        f"$scriptBlock = [ScriptBlock]::Create(@'\n{raw_script}\n'@); "
+                        f"Invoke-Command -ScriptBlock $scriptBlock -ArgumentList {arg_list_text}"
+                    )
+                else:
+                    inline_cmd = (
+                        f"$scriptBlock = [ScriptBlock]::Create(@'\n{raw_script}\n'@); "
+                        f"Invoke-Command -ScriptBlock $scriptBlock"
+                    )
+                result = session.run_ps(inline_cmd)
+                raw_stdout = result.std_out or b""
+                raw_stderr = result.std_err or b""
+                stdout = _clean_stdout(raw_stdout)
+                stderr = _clean_stdout(raw_stderr)
+
+                # Attempt to extract JSON substring if present
+                json_sub = _extract_json_from_text(stdout)
+                if json_sub:
+                    stdout = json_sub
+
+                ret = {"stdout": stdout, "stderr": stderr, "returncode": result.status_code}
+                if os.environ.get("WSOPS_DEBUG") == "1":
+                    try:
+                        ret["raw_stdout_b64"] = base64.b64encode(raw_stdout).decode("ascii")
+                        ret["raw_stderr_b64"] = base64.b64encode(raw_stderr).decode("ascii")
+                        try:
+                            ret["debugAttempts"] = attempts_results
+                        except Exception:
+                            pass
+                        try:
+                            if success_attempt is not None:
+                                ret["successAttempt"] = success_attempt
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                return ret
+        except Exception as e:
+            try:
+                logger.exception(f"Execution error running script on {server}: {e}")
+            except Exception:
+                pass
+            resp = {"stdout": "", "stderr": str(e), "returncode": -1}
+            if os.environ.get("WSOPS_DEBUG") == "1":
+                try:
+                    resp["debugAttempts"] = attempts_results
+                except Exception:
+                    pass
+            return resp
+    except Exception as e:
+        resp = {"stdout": "", "stderr": str(e), "returncode": -1}
+        if os.environ.get("WSOPS_DEBUG") == "1":
+            try:
+                resp["debugAttempts"] = attempts_results
+            except Exception:
+                pass
+        return resp
+
+
+# ---------- models ----------
+
+class ServerInfoRequest(BaseModel):
+    # Basic fields; validators will enforce length and pattern constraints
+    appId: str
+    serverName: str
+    username: str
+    password: str
+
+    @field_validator("appId")
+    def appid_length(cls, v):
+        if not v or len(v.strip()) == 0 or len(v) > 64:
+            raise ValueError("appId length invalid")
+        return v.strip()
+
+    @field_validator("serverName")
+    def validate_servername(cls, v):
+        if not v or len(v.strip()) == 0 or len(v) > 253:
+            raise ValueError("Invalid serverName length")
+        if re.search(r"[;|>`$<\\]", v):
+            raise ValueError("Invalid characters in serverName")
+        ip_re = re.compile(r"^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$")
+        host_re = re.compile(r"^[A-Za-z0-9._-]+(\.[A-Za-z0-9._-]+)*$")
+        if not (ip_re.match(v) or host_re.match(v)):
+            raise ValueError("serverName must be an IP or hostname")
+        return v.strip()
+
+    @field_validator("username")
+    def username_length(cls, v):
+        if not v or len(v.strip()) == 0 or len(v) > 128:
+            raise ValueError("Invalid username length")
+        return v.strip()
+
+    @field_validator("password")
+    def password_length(cls, v):
+        if not v or len(v) == 0 or len(v) > 512:
+            raise ValueError("Invalid password length")
+        return v
+
+
+class RegistryInfoRequest(ServerInfoRequest):
+    registryPath: str
+
+    @field_validator("registryPath")
+    def registry_path_length(cls, v):
+        if not v or len(v.strip()) == 0 or len(v) > 1024:
+            raise ValueError("Invalid registryPath length")
+        return v.strip()
+
+
+class FolderInfoRequest(ServerInfoRequest):
+    folderPath: str
+
+    @field_validator("folderPath")
+    def folder_path_length(cls, v):
+        if not v or len(v.strip()) == 0 or len(v) > 2048:
+            raise ValueError("Invalid folderPath length")
+        return v.strip()
+
+
+class ModifiedItemsRequest(BaseModel):
+    appId: str
+    serverName: str
+    username: str
+    password: str
+    folderPath: str
+    modifiedAfter: Optional[str] = None  # 'YYYY-MM-DD HH:mm:ss'
+    modifiedBefore: Optional[str] = None
+    recurse: bool = False
+    maxItems: int = 500
+    extensions: Optional[List[str]] = None
+
+    @field_validator("appId")
+    def mi_appid_length(cls, v):
+        if not v or len(v.strip()) == 0 or len(v) > 64:
+            raise ValueError("appId length invalid")
+        return v.strip()
+
+    @field_validator("serverName")
+    def mi_validate_servername(cls, v):
+        if not v or len(v.strip()) == 0 or len(v) > 253:
+            raise ValueError("Invalid serverName length")
+        if re.search(r"[;|>`$<\\]", v):
+            raise ValueError("Invalid characters in serverName")
+        return v.strip()
+
+    @field_validator("username")
+    def mi_username_length(cls, v):
+        if not v or len(v.strip()) == 0 or len(v) > 128:
+            raise ValueError("Invalid username length")
+        return v.strip()
+
+    @field_validator("password")
+    def mi_password_length(cls, v):
+        if not v or len(v) == 0 or len(v) > 512:
+            raise ValueError("Invalid password length")
+        return v
+
+    @field_validator("folderPath")
+    def mi_folder_path_length(cls, v):
+        if not v or len(v.strip()) == 0 or len(v) > 2048:
+            raise ValueError("Invalid folderPath length")
+        return v.strip()
+
+
+class WebConfigRequest(BaseModel):
+    # used for /webconfig and /webconfig/download; appId optional for filename
+    appId: Optional[str] = None
+    serverName: str
+    username: str
+    password: str
+    folderPath: str
+    maxChars: int = 200000
+
+
+class EventLogRequest(ServerInfoRequest):
+    channel: str = "System"  # System | Application | Security
+    hours: int = 24
+    startTime: Optional[str] = None  # ISO datetime string
+    endTime: Optional[str] = None
+    maxEvents: int = 200
+
+
+
+# ---------- routes ----------
+
+@router.post("/api/server/registryinfo")
+def get_registry_info(req: RegistryInfoRequest):
+    # Block top-level keys for performance and safety
+    top_level_keys = {
+        "HKLM", "HKEY_LOCAL_MACHINE",
+        "HKCU", "HKEY_CURRENT_USER",
+        "HKCR", "HKEY_CLASSES_ROOT",
+        "HKU", "HKEY_USERS",
+        "HKCC", "HKEY_CURRENT_CONFIG",
+        "SYSTEM"
+    }
+
+    # Normalize path and ensure Registry:: prefix for PowerShell
+    path = (req.registryPath or "").strip().replace("/", "\\")
+
+    # Accept inputs like 'HKLM\\SOFTWARE\\...' or 'HKEY_LOCAL_MACHINE\\SOFTWARE\\...'
+    # Normalize short aliases to full hive names (PowerShell accepts Registry::HKEY_...)
+    alias_map = {
+        "HKLM": "HKEY_LOCAL_MACHINE",
+        "HKCU": "HKEY_CURRENT_USER",
+        "HKCR": "HKEY_CLASSES_ROOT",
+        "HKU": "HKEY_USERS",
+        "HKCC": "HKEY_CURRENT_CONFIG",
+    }
+
+    raw = path
+    # If user provided 'Registry::...' keep as-is
+    if raw.lower().startswith("registry::"):
+        path_with_prefix = raw
+    else:
+        parts = [p for p in raw.split("\\") if p != ""]
+        if parts:
+            root = parts[0].upper().rstrip(":")
+            rest = "\\".join(parts[1:]) if len(parts) > 1 else ""
+            if root in alias_map:
+                root_full = alias_map[root]
+                path_with_prefix = f"Registry::{root_full}\\{rest}" if rest else f"Registry::{root_full}"
+            elif root.startswith("HKEY_"):
+                path_with_prefix = f"Registry::{raw}"
+            elif root.endswith(":"):
+                # e.g., 'HKLM:' style -> convert 'HKLM:\SOFTWARE' to HKEY name
+                root_key = root.rstrip(":").upper()
+                if root_key in alias_map:
+                    root_full = alias_map[root_key]
+                    path_with_prefix = f"Registry::{root_full}\\{rest}"
+                else:
+                    path_with_prefix = f"Registry::{raw}"
+            else:
+                # Unknown root; pass through with Registry:: prefix and hope for the best
+                path_with_prefix = f"Registry::{raw}"
+        else:
+            path_with_prefix = f"Registry::{raw}"
+
+    # Depth guard: require deeper than top-level root\something
+    raw_no_prefix = path_with_prefix.replace("Registry::", "")
+    parts = [p for p in raw_no_prefix.split("\\") if p != ""]
+    if parts:
+        root = parts[0].upper()
+        if root in top_level_keys and len(parts) <= 2:
+            # e.g., HKLM or HKLM\SOFTWARE — too broad
+            return {
+                "AppID": req.appId,
+                "Server": req.serverName,
+                "Items": [],
+                "stderr": "Top-level registry queries are not allowed.",
+                "returncode": -2,
+            }
+
+    # Read external PowerShell script and call it with the raw path as a positional arg
+    script = read_script("get_registry_info.ps1")
+    params = [raw_no_prefix]
+    result = run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId, params=params)
+    return {
+        "AppID": req.appId,
+        "Server": req.serverName,
+        "RawOutput": result.get("stdout", ""),
+        "stderr": result.get("stderr", ""),
+        "returncode": result.get("returncode", 0),
+    }
+
+
+
+# Updated: Parse stdout and return {rows: [...], stderr: ...}
+@router.post("/api/server/iis")
+def get_iis_info(req: ServerInfoRequest):
+    script = read_script("get_iis_websites.ps1")
+    result = run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId)
+    try:
+        stdout = result.get("stdout", "")
+        rows = json.loads(stdout) if stdout else []
+        if isinstance(rows, dict):
+            rows = [rows]
+    except Exception as e:
+        rows = []
+        result["stderr"] = f"Failed to parse IIS websites output: {e}"
+    return {
+        "rows": rows,
+        "stderr": result.get("stderr", ""),
+        "returncode": result.get("returncode", 0),
+    }
+
+
+@router.post("/api/server/os_patching_parallel")
+def get_server_health_info(req: dict):
+    """Return Server Health Info from multiple servers in parallel using ThreadPoolExecutor.
+    
+    Checks OS version, uptime, stopped services, IIS websites, and app pools.
+    
+    Expected payload:
+    {
+        "servers": [{"appId": "1001", "serverName": "server1", "username": "user", "password": "pass"}, ...]
+    }
+    """
+    import concurrent.futures
+    
+    servers = req.get("servers", [])
+    if not servers:
+        return {"results": []}
+    
+    script = read_script("get_os_patching_info.ps1")
+    
+    def process_single_server(server_config):
+        """Process a single server and return health info result"""
+        try:
+            appId = server_config.get("appId")
+            serverName = server_config.get("serverName")
+            username = server_config.get("username")
+            password = server_config.get("password")
+            
+            result = run_powershell_script_remote(serverName, username, password, script, appId)
+            
+            try:
+                stdout = result.get("stdout", "")
+                rows = json.loads(stdout) if stdout else []
+                if isinstance(rows, dict):
+                    rows = [rows]
+            except Exception as e:
+                rows = []
+                result["stderr"] = f"Failed to parse server health info output: {e}"
+            
+            rc = result.get("returncode", 0)
+            return {
+                "appId": appId,
+                "server": serverName,
+                "rows": rows,
+                "stderr": result.get("stderr", ""),
+                "returncode": rc,
+                "success": (rc == 0 and not (result.get("stderr") or "").strip()),
+            }
+        except Exception as e:
+            return {
+                "appId": server_config.get("appId"),
+                "server": server_config.get("serverName"),
+                "rows": [],
+                "stderr": str(e),
+                "returncode": 1,
+                "success": False,
+            }
+    
+    # Use ThreadPoolExecutor for parallel execution (max 15 concurrent connections)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+        results = list(executor.map(process_single_server, servers))
+    
+    return {"results": results}
+
+
+@router.post("/api/server/parallel")
+def execute_parallel_operation(req: dict):
+    """Universal parallel execution endpoint for all server operations.
+    
+    Expected payload:
+    {
+        "operation": "services|servicepacks|iis|gac|comobjects|certificates|eventlogs|registryinfo",
+        "servers": [{"appId": "1001", "serverName": "server1", "username": "user", "password": "pass"}, ...],
+        "params": {...}  // Optional operation-specific parameters
+    }
+    """
+    import concurrent.futures
+    
+    operation = req.get("operation")
+    servers = req.get("servers", [])
+    operation_params = req.get("params", {})
+    
+    if not operation or not servers:
+        return {"results": []}
+    
+    # Operation to script mapping
+    script_mapping = {
+        "services": "get_services.ps1",
+        "servicepacks": "get_servicepacks.ps1", 
+        "iis": "get_iis_websites.ps1",
+        "apppools": "get_iis_apppools.ps1",
+        "gac": "get_gac_assemblies.ps1",
+        "comobjects": "get_com_objects.ps1",
+        "certificates": "get_certificates.ps1",
+        "eventlogs": "query_eventlog.ps1",
+        "registryinfo": "get_registry_info.ps1"
+    }
+    
+    script_file = script_mapping.get(operation)
+    if not script_file:
+        return {"results": [], "error": f"Unknown operation: {operation}"}
+    
+    script = read_script(script_file)
+    
+    def process_single_server(server_config):
+        """Process a single server and return result"""
+        try:
+            appId = server_config.get("appId")
+            serverName = server_config.get("serverName")
+            username = server_config.get("username")
+            password = server_config.get("password")
+            
+            # Handle operation-specific parameters
+            if operation == "registryinfo":
+                registry_path = operation_params.get("registryPath", "")
+                # Use positional parameters for param() block in PowerShell script
+                params = [registry_path]  # Pass registry path as positional parameter
+                result = run_powershell_script_remote(serverName, username, password, script, appId, params=params)
+                
+                # Registry info returns text output, not JSON
+                rc = result.get("returncode", 0)
+                return {
+                    "appId": appId,
+                    "server": serverName,
+                    "operation": operation,
+                    "data": result.get("stdout", ""),  # Return raw text output
+                    "stderr": result.get("stderr", ""),
+                    "returncode": rc,
+                    "success": (rc == 0 and not (result.get("stderr") or "").strip()),
+                }
+            elif operation == "eventlogs":
+                # Use positional parameters for param() block in PowerShell script
+                # param($Channel, $Hours, $StartTime, $EndTime, $MaxEvents)
+                channel = operation_params.get("logName", "Application")
+                # Respect provided hours when no explicit date range is set
+                hours = operation_params.get("hours", 24)
+                try:
+                    hours = int(hours) if hours is not None else 24
+                except Exception:
+                    hours = 24
+                start_time = operation_params.get("startTime", "")
+                end_time = operation_params.get("endTime", "")
+                max_events = int(operation_params.get("maxEvents", 200))
+                
+                params = [channel, hours, start_time, end_time, max_events]
+                result = run_powershell_script_remote(serverName, username, password, script, appId, params=params)
+                
+                try:
+                    stdout = result.get("stdout", "")
+                    data = json.loads(stdout) if stdout else []
+                    if isinstance(data, dict):
+                        data = [data]
+                except Exception as e:
+                    data = []
+                    result["stderr"] = f"Failed to parse {operation} output: {e}"
+                
+                rc = result.get("returncode", 0)
+                return {
+                    "appId": appId,
+                    "server": serverName,
+                    "operation": operation,
+                    "data": data,
+                    "stderr": result.get("stderr", ""),
+                    "returncode": rc,
+                    "success": (rc == 0 and not (result.get("stderr") or "").strip()),
+                }
+            else:
+                params = {"AppID": appId, "Server": serverName}
+                
+                result = run_powershell_script_remote(serverName, username, password, script, appId, params=params)
+                
+                try:
+                    stdout = result.get("stdout", "")
+                    data = json.loads(stdout) if stdout else []
+                    if isinstance(data, dict):
+                        data = [data]
+                except Exception as e:
+                    data = []
+                    result["stderr"] = f"Failed to parse {operation} output: {e}"
+                
+                rc = result.get("returncode", 0)
+                return {
+                    "appId": appId,
+                    "server": serverName,
+                    "operation": operation,
+                    "data": data,
+                    "stderr": result.get("stderr", ""),
+                    "returncode": rc,
+                    "success": (rc == 0 and not (result.get("stderr") or "").strip()),
+                }
+        except Exception as e:
+            return {
+                "appId": server_config.get("appId"),
+                "server": server_config.get("serverName"),
+                "operation": operation,
+                "data": [],
+                "stderr": str(e),
+                "returncode": 1,
+                "success": False,
+            }
+    
+    # Use ThreadPoolExecutor for parallel execution (max 15 concurrent connections)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+        results = list(executor.map(process_single_server, servers))
+    
+    return {"results": results}
+
+
+@router.post("/api/server/iis_apppools_parallel")
+def get_iis_apppools_parallel(req: dict):
+    """Get IIS Application Pools from multiple servers in parallel."""
+    import concurrent.futures
+    
+    servers = req.get("servers", [])
+    if not servers:
+        return {"results": []}
+    
+    script = read_script("get_iis_apppools.ps1")
+    
+    def process_single_server(server_config):
+        """Process a single server for IIS App Pools"""
+        try:
+            appId = server_config.get("appId")
+            serverName = server_config.get("serverName")
+            username = server_config.get("username")
+            password = server_config.get("password")
+            
+            params = {"AppID": appId, "Server": serverName}
+            result = run_powershell_script_remote(serverName, username, password, script, appId, params=params)
+            
+            try:
+                stdout = result.get("stdout", "")
+                data = json.loads(stdout) if stdout else []
+                if isinstance(data, dict):
+                    data = [data]
+            except Exception as e:
+                data = []
+                result["stderr"] = f"Failed to parse IIS App Pools output: {e}"
+            
+            rc = result.get("returncode", 0)
+            return {
+                "appId": appId,
+                "server": serverName,
+                "data": data,
+                "stderr": result.get("stderr", ""),
+                "returncode": rc,
+                "success": (rc == 0 and not (result.get("stderr") or "").strip()),
+            }
+        except Exception as e:
+            return {
+                "appId": server_config.get("appId"),
+                "server": server_config.get("serverName"),
+                "data": [],
+                "stderr": str(e),
+                "returncode": 1,
+                "success": False,
+            }
+    
+    # Use ThreadPoolExecutor for parallel execution (max 15 concurrent connections)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+        results = list(executor.map(process_single_server, servers))
+    
+    return {"results": results}
+
+
+@router.post("/api/server/content_verification_parallel")
+def get_content_verification_parallel(req: dict):
+    """Get Modified Items (Content Verification) from multiple servers in parallel."""
+    import concurrent.futures
+    
+    servers = req.get("servers", [])
+    modified_items_path = req.get("modified_items_path", "")
+    modified_after = req.get("modified_after", "")
+    modified_before = req.get("modified_before", "")
+    recurse = req.get("recurse", False)
+    max_items = req.get("max_items", 500)
+    
+    if not servers:
+        return {"results": []}
+    
+    script = read_script("get_modified_items.ps1")
+    
+    def process_single_server(server_config):
+        """Process a single server for Modified Items"""
+        try:
+            appId = server_config.get("appId")
+            serverName = server_config.get("serverName")
+            username = server_config.get("username")
+            password = server_config.get("password")
+            
+            # Pass through date strings as-is; PowerShell script parses ISO/local formats
+            formatted_after = modified_after or None
+            formatted_before = modified_before or None
+            
+            params = {
+                "AppID": appId, 
+                "Server": serverName, 
+                "FolderPath": modified_items_path,
+                "MaxItems": max_items,
+                "Recurse": recurse,
+                "ModifiedAfter": formatted_after,
+                "ModifiedBefore": formatted_before,
+                "Extensions": []  # Empty for now, can be added later if needed
+            }
+            result = run_powershell_script_remote(serverName, username, password, script, appId, params=params)
+            
+            try:
+                stdout = result.get("stdout", "")
+                data = json.loads(stdout) if stdout else []
+                if isinstance(data, dict):
+                    data = [data]
+            except Exception as e:
+                data = []
+                result["stderr"] = f"Failed to parse Modified Items output: {e}"
+            
+            rc = result.get("returncode", 0)
+            return {
+                "appId": appId,
+                "server": serverName,
+                "data": data,
+                "stderr": result.get("stderr", ""),
+                "returncode": rc,
+                "success": (rc == 0 and not (result.get("stderr") or "").strip()),
+            }
+        except Exception as e:
+            return {
+                "appId": server_config.get("appId"),
+                "server": server_config.get("serverName"),
+                "data": [],
+                "stderr": str(e),
+                "returncode": 1,
+                "success": False,
+            }
+    
+    # Use ThreadPoolExecutor for parallel execution (max 15 concurrent connections)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+        results = list(executor.map(process_single_server, servers))
+    
+    return {"results": results}
+
+
+@router.post("/api/server/webconfig_parallel")
+def get_webconfig_parallel(req: dict):
+    """Get Web Config information from multiple servers in parallel."""
+    import concurrent.futures
+    
+    servers = req.get("servers", [])
+    webconfig_path = req.get("webconfig_path", "")
+    
+    if not servers:
+        return {"results": []}
+    
+    script = read_script("get_webconfig.ps1")
+    
+    def process_single_server(server_config):
+        """Process a single server for Web Config"""
+        try:
+            appId = server_config.get("appId")
+            serverName = server_config.get("serverName")
+            username = server_config.get("username")
+            password = server_config.get("password")
+            
+            # Use positional parameters for param() block in PowerShell script
+            params = [webconfig_path]  # Only pass the folder path as positional parameter
+            result = run_powershell_script_remote(serverName, username, password, script, appId, params=params)
+            
+            try:
+                stdout = result.get("stdout", "")
+                data = json.loads(stdout) if stdout else []
+                if isinstance(data, dict):
+                    data = [data]
+            except Exception as e:
+                data = []
+                result["stderr"] = f"Failed to parse Web Config output: {e}"
+            
+            rc = result.get("returncode", 0)
+            return {
+                "appId": appId,
+                "server": serverName,
+                "data": data,
+                "stderr": result.get("stderr", ""),
+                "returncode": rc,
+                "success": (rc == 0 and not (result.get("stderr") or "").strip()),
+            }
+        except Exception as e:
+            return {
+                "appId": server_config.get("appId"),
+                "server": server_config.get("serverName"),
+                "data": [],
+                "stderr": str(e),
+                "returncode": 1,
+                "success": False,
+            }
+    
+    # Use ThreadPoolExecutor for parallel execution (max 15 concurrent connections)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+        results = list(executor.map(process_single_server, servers))
+    
+    return {"results": results}
+
+
+# Alias to match frontend `/api/server/iis/websites` without breaking existing route
+@router.post("/api/server/iis/websites")
+def get_iis_websites_alias(req: ServerInfoRequest):
+    return get_iis_info(req)
+
+
+@router.post("/api/server/services")
+def get_services_info(req: ServerInfoRequest):
+    # Pass appId and serverName as named parameters (they will be prepended safely)
+    script = read_script("get_services.ps1")
+    params = {"AppID": req.appId, "Server": req.serverName}
+    result = run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId, params=params)
+    try:
+        stdout = result.get("stdout", "")
+        services = json.loads(stdout) if stdout else []
+        if isinstance(services, dict):
+            services = [services]
+        services_list = [
+            {
+                "Name": s.get("Name", ""),
+                "DisplayName": s.get("DisplayName", ""),
+                "State": s.get("State", ""),
+                "StartMode": s.get("StartMode", ""),
+                "StartName": s.get("StartName", ""),
+            }
+            for s in services
+        ]
+        return {
+            "AppID": req.appId,
+            "Server": req.serverName,
+            "services": services_list,
+            "stderr": result.get("stderr", ""),
+            "returncode": result.get("returncode", 0),
+        }
+    except Exception as e:
+        return {
+            "AppID": req.appId,
+            "Server": req.serverName,
+            "services": [],
+            "stderr": str(e),
+            "returncode": -1,
+        }
+
+
+@router.post("/api/server/servicepacks")
+def get_servicepacks_info(req: ServerInfoRequest):
+    script = read_script("get_servicepacks.ps1")
+    result = run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId)
+    stdout = result.get("stdout", "") or ""
+    stderr = result.get("stderr", "") or ""
+    installed = []
+    hotfixes = []
+    parseError = False
+    try:
+        parsed = json.loads(stdout) if stdout else {}
+        if isinstance(parsed, dict):
+            installed = parsed.get("InstalledSoftware") or []
+            hotfixes = parsed.get("HotFixes") or []
+        elif isinstance(parsed, list):
+            # Older scripts might return a bare list of software; treat as InstalledSoftware
+            installed = parsed
+    except Exception:
+        # leave arrays empty and flag parse error
+        parseError = True
+
+    # Normalize to lists
+    if not isinstance(installed, list):
+        installed = [installed] if installed else []
+    if not isinstance(hotfixes, list):
+        hotfixes = [hotfixes] if hotfixes else []
+
+    return {
+        "AppID": req.appId,
+        "Server": req.serverName,
+        "InstalledSoftware": installed,
+        "HotFixes": hotfixes,
+        "RawOutput": stdout,
+        "parseError": parseError,
+        "stderr": stderr,
+        "returncode": result.get("returncode", 0),
+    }
+
+
+
+# Updated: Parse stdout and return {rows: [...], stderr: ...}
+@router.post("/api/server/iisapppools")
+def get_iis_apppools(req: ServerInfoRequest):
+    script = read_script("get_iis_apppools.ps1")
+    result = run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId)
+    try:
+        stdout = result.get("stdout", "")
+        rows = json.loads(stdout) if stdout else []
+        if isinstance(rows, dict):
+            rows = [rows]
+    except Exception as e:
+        rows = []
+        result["stderr"] = f"Failed to parse IIS app pools output: {e}"
+    return {
+        "rows": rows,
+        "stderr": result.get("stderr", ""),
+        "returncode": result.get("returncode", 0),
+    }
+
+
+# Alias to match frontend `/api/server/iis/apppools`
+@router.post("/api/server/iis/apppools")
+def get_iis_apppools_alias(req: ServerInfoRequest):
+    return get_iis_apppools(req)
+
+
+@router.post("/api/server/modifieditems")
+def get_modified_items(req: ModifiedItemsRequest):
+    if req.maxItems <= 0 or req.maxItems > 5000:
+        raise HTTPException(status_code=400, detail="maxItems out of allowed range (1..5000)")
+
+    # Use named params to safely pass folderPath, limits, and date strings
+    script = read_script("get_modified_items.ps1")
+    # Convert extensions to list or null
+    params = {
+        "AppID": req.appId,
+        "Server": req.serverName,
+        "FolderPath": req.folderPath,
+        "MaxItems": int(req.maxItems),
+        "Recurse": bool(req.recurse),
+        "ModifiedAfter": req.modifiedAfter or None,
+        "ModifiedBefore": req.modifiedBefore or None,
+        "Extensions": req.extensions or [],
+    }
+    return run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId, params=params)
+
+
+@router.post("/api/server/webconfig")
+def get_webconfig(req: WebConfigRequest):
+    # Escape and quote folder path for PowerShell
+    folder = ps_lit(req.folderPath).rstrip("\\/ ").strip()
+    folder_literal = f"'{folder}'"  # Always wrap in single quotes
+    maxchars = int(req.maxChars)
+    ps_script_content = read_script("get_webconfig.ps1")
+    # The get_webconfig.ps1 uses a param($FolderPath) declaration so call it via positional args
+    script = ps_script_content
+    # Pass folder and maxchars as positional args to the remote ScriptBlock
+    params = [req.folderPath, maxchars]
+    return run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId, params=params)
+
+
+@router.post("/api/server/gac")
+def get_gac_assemblies(req: ServerInfoRequest):
+    script = read_script("get_gac_assemblies.ps1")
+    result = run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId)
+    # Wrap stdout in Items property if possible
+    try:
+        items = json.loads(result.get("stdout", "[]"))
+        if not isinstance(items, list):
+            items = []
+    except Exception:
+        items = []
+    result["Items"] = items
+    return result
+
+
+@router.post("/api/server/comobjects")
+def get_com_objects(req: ServerInfoRequest):
+    script = read_script("get_com_objects.ps1")
+    result = run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId)
+    # Wrap stdout in Items property if possible
+    try:
+        items = json.loads(result.get("stdout", "[]"))
+        if not isinstance(items, list):
+            items = []
+    except Exception:
+        items = []
+    result["Items"] = items
+    return result
+
+
+@router.post("/api/server/certificates")
+def get_certificates(req: ServerInfoRequest):
+    """Collect certificates from common stores and return Items list.
+    Each item should include: Subject, Issuer, Thumbprint, Store, NotBefore, NotAfter, Valid
+    """
+    script = read_script("get_certificates.ps1")
+    result = run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId)
+    # Try to parse JSON Items from stdout
+    try:
+        items = json.loads(result.get("stdout", "[]"))
+        if not isinstance(items, list):
+            items = []
+    except Exception:
+        items = []
+    return {
+        "AppID": req.appId,
+        "Server": req.serverName,
+        "Items": items,
+        "stderr": result.get("stderr", ""),
+        "returncode": result.get("returncode", 0),
+    }
+
+
+@router.post("/api/server/eventlogs")
+def query_event_logs(req: EventLogRequest):
+    script = read_script("query_eventlog.ps1")
+    params = [req.channel, int(req.hours or 24), req.startTime or "", req.endTime or "", int(req.maxEvents or 200)]
+    result = run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId, params=params)
+    stdout = result.get("stdout", "") or ""
+    stderr = result.get("stderr", "") or ""
+    events = []
+    error_msg = None
+    raw_output = None
+    try:
+        parsed = json.loads(stdout) if stdout else []
+        if isinstance(parsed, list):
+            events = parsed
+        elif isinstance(parsed, dict):
+            # Script returned an object: either an error payload or a single-event dict
+            if parsed.get("Error"):
+                error_msg = parsed.get("Error")
+            else:
+                # wrap single object as list
+                events = [parsed]
+    except Exception:
+        # If parsing fails, keep raw output for debugging but still return normalized shape
+        raw_output = stdout
+
+    resp = {
+        "AppID": req.appId,
+        "Server": req.serverName,
+        "Events": events,
+        "stderr": stderr,
+        "returncode": result.get("returncode", 0),
+    }
+    if error_msg:
+        resp["Error"] = error_msg
+    if raw_output:
+        resp["RawOutput"] = raw_output
+
+    return resp
+
+
+@router.post("/api/server/webconfig/download")
+def download_webconfig(req: WebConfigRequest):
+    import datetime
+    folder = ps_lit(req.folderPath).rstrip("\\/ ").strip()
+    folder_literal = f"'{folder}'"
+    ps_script_content = read_script("get_webconfig.ps1")
+    script = ps_script_content
+    params = [req.folderPath, int(req.maxChars)]
+    result = run_powershell_script_remote(req.serverName, req.username, req.password, script, req.appId, params=params)
+    try:
+        data = json.loads(result.get("stdout", "") or "{}")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Invalid response from remote server")
+
+    if not data.get("WebConfigBase64"):
+        raise HTTPException(status_code=404, detail=data.get("Error") or "web.config not found")
+
+    # Support both base64 and 0x... hex payloads
+    file_bytes = io.BytesIO()
+    b64 = data["WebConfigBase64"]
+    if isinstance(b64, str) and b64.startswith("0x"):
+        try:
+            file_bytes.write(bytes.fromhex(b64[2:]))
+        except Exception:
+            raise HTTPException(status_code=500, detail="Invalid hex payload from remote server")
+    else:
+        try:
+            file_bytes.write(base64.b64decode(b64))
+        except Exception:
+            raise HTTPException(status_code=500, detail="Invalid base64 payload from remote server")
+    file_bytes.seek(0)
+
+    # Sanitize filename parts and enforce size limit
+    def _sanitize_filename_part(s: str, maxlen: int = 64) -> str:
+        if not s:
+            return "unknown"
+        s2 = str(s)
+        # Replace unsafe chars with underscore
+        s2 = re.sub(r"[^A-Za-z0-9._-]", "_", s2)
+        return s2[:maxlen]
+
+    appid_safe = _sanitize_filename_part(req.appId or "unknownapp")
+    server_safe = _sanitize_filename_part(req.serverName or "unknownserver")
+    now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{appid_safe}_{server_safe}_webconfig_{now}.config"
+
+    # Enforce max file size for downloads (5 MB)
+    MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
+    file_bytes.seek(0, io.SEEK_END)
+    size = file_bytes.tell()
+    if size > MAX_DOWNLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Requested web.config payload too large")
+    file_bytes.seek(0)
+
+    return StreamingResponse(
+        file_bytes,
+        media_type="application/xml",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
