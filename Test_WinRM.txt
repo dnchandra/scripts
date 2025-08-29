@@ -1,0 +1,32 @@
+param(
+  [Parameter(Mandatory=$true)][string]$Target,
+  [Parameter(Mandatory=$true)][string]$User,
+  [Parameter(Mandatory=$true)][string]$Password
+)
+
+$cred = New-Object PSCredential($User, ($Password | ConvertTo-SecureString -AsPlainText -Force))
+
+$tests = @(
+  @{ Name="TCP 5985"; Script={ Test-NetConnection $Target -Port 5985 } },
+  @{ Name="TCP 5986"; Script={ Test-NetConnection $Target -Port 5986 } },
+  @{ Name="WSMan HTTP"; Script={ Test-WSMan $Target } },
+  @{ Name="WSMan HTTPS"; Script={ Test-WSMan $Target -UseSSL } },
+  @{ Name="Invoke-Command Kerberos HTTP"; Script={ Invoke-Command $Target -Authentication Kerberos -Credential $cred -ScriptBlock { hostname } } },
+  @{ Name="Invoke-Command Negotiate HTTP"; Script={ Invoke-Command $Target -Authentication Negotiate -Credential $cred -ScriptBlock { hostname } } },
+  @{ Name="Invoke-Command Negotiate HTTPS"; Script={ Invoke-Command $Target -UseSSL -Authentication Negotiate -Credential $cred -ScriptBlock { hostname } } }
+)
+
+foreach ($t in $tests) {
+  Write-Host "=== $($t.Name) ==="
+  try {
+    $r = & $t.Script
+    if ($r -is [System.Array]) { $r | Out-String | Write-Host } else { $r | Out-String | Write-Host }
+    Write-Host "Result: SUCCESS`n"
+  } catch {
+    Write-Host "Result: FAIL"
+    Write-Host ("Error: " + $_.Exception.Message + "`n")
+  }
+}
+
+
+#.\Test-WinRMMatrix.ps1 -Target serverA.contoso.com -User "CONTOSO\UserName" -Password "P@ssw0rd123!"
