@@ -1,0 +1,3653 @@
+// --------------------- Imports (must be top-level) ---------------------
+import React, { useEffect, useState } from "react";
+import Alert from "../components/Alert";
+import api, { fetchRegistryInfo as fetchRegistryInfoApi, downloadWebConfig } from "../utils/api";
+import AppIDMultiSelect from "../components/AppIDMultiSelect";
+import ServerMultiSelect from "../components/ServerMultiSelect";
+import IISInfoTable from "../components/IISInfoTable";
+import ServicesInfoTable from "../components/ServicesInfoTable";
+import ServicePacksInfoTable from "../components/ServicePacksInfoTable";
+import DNSResults from "../components/DNSResults";
+import ConnectivityResults from "../components/ConnectivityResults";
+import { exportToExcel } from "../utils/exportToExcel";
+import CertificatesInfoTable from "../components/CertificatesInfoTable";
+import DeploymentResults from "../components/DeploymentResults";
+import GACResults from "../components/GACResults";
+import COMResults from "../components/COMResults";
+
+// --------------------- Utility ---------------------
+function groupByAppIdServer(data = []) {
+  const out = {};
+  (data || []).forEach((r) => {
+    const app = r._appId || r.AppID || "N/A";
+    const srv = r._server || r.Server || "N/A";
+    out[app] = out[app] || {};
+    out[app][srv] = out[app][srv] || [];
+    out[app][srv].push(r);
+  });
+  return out;
+}
+
+// --------------------- Main HomeDashboard ---------------------
+function HomeDashboard() {
+  // Global alert modal state
+  const [alertMessage, setAlertMessage] = useState("");
+  const [alertType, setAlertType] = useState("error");
+  const showAlert = (msg, type = "error") => {
+    setAlertMessage(msg);
+    setAlertType(type);
+  };
+  const closeAlert = () => setAlertMessage("");
+
+  // Centralized error classification and alerting
+  const classifyError = (raw) => {
+    const s = String(raw || "");
+    const m = s.toLowerCase();
+    if (/credential|unauthor|forbid|denied|access is denied|invalid user|logon failure|user name or password is incorrect/.test(m)) {
+      return "cred";
+    }
+    if (/getaddrinfo|failed to resolve|httpconnectionpool|max retries exceeded|timed out|timeout|network is unreachable|no route to host|econnrefused|connectex|winrm client cannot process the request|rpc server is unavailable|remote procedure call failed|hostname could not be parsed/.test(m)) {
+      return "conn";
+    }
+    return null;
+  };
+  const alertForError = (raw) => {
+    const kind = classifyError(raw);
+    if (kind === "cred") return showAlert("Please enter valid credentials");
+    if (kind === "conn") return showAlert("Please check Server Connectivity");
+    return null;
+  };
+
+  // Generic retry function for failed servers
+  const retryFailedServers = async (operation, errors, currentData, setData, setErrors) => {
+    if (!errors || errors.length === 0) return;
+    
+    const retryServers = errors.map(err => ({
+      appId: err.appId,
+      serverName: err.server || err.serverName,
+      username,
+      password
+    }));
+
+    setLoading(true);
+    
+    try {
+      console.log(`Retrying ${operation} for ${retryServers.length} failed servers`);
+      const response = await api.post(`/api/server/parallel`, {
+        operation: operation,
+        servers: retryServers
+      });
+
+      const successData = [];
+      const remainingErrors = [];
+
+      for (const result of response.data.results || []) {
+        const { appId, server, data, stderr, returncode, RawOutput, rawOutput, raw_stdout_b64, minorFailure, debugAttempts, successAttempt } = result;
+        
+        if (data && Array.isArray(data) && returncode === 0) {
+          // Success - add to current data
+          data.forEach((item) => successData.push({ ...item, _appId: appId, _server: server }));
+        } else {
+          // Still failed
+          const errorMsg = stderr && stderr.trim() ? stderr.trim() : `Failed with exit code: ${returncode}`;
+          if (!/^#<\s*CLIXML/i.test(errorMsg)) {
+            remainingErrors.push({ appId, serverName: server, message: errorMsg });
+          }
+        }
+      }
+
+      // Update data and errors
+      setData([...currentData, ...successData]);
+      setErrors(remainingErrors);
+
+      if (successData.length > 0) {
+        showAlert(`Successfully retried ${successData.length} server(s)`, "success");
+      }
+      if (remainingErrors.length > 0) {
+        showAlert(`${remainingErrors.length} server(s) still failed`, "error");
+      }
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || `Failed to retry ${operation}`;
+      showAlert(msg, "error");
+    }
+
+    setLoading(false);
+  };
+
+  // Service Packs/HotFixes filters and export (kept if you add UI later)
+  const [filterSPAppIDs, setFilterSPAppIDs] = useState([]);
+  const [filterSPServers, setFilterSPServers] = useState([]);
+  const [appliedSPAppIDs, setAppliedSPAppIDs] = useState([]);
+  const [appliedSPServers, setAppliedSPServers] = useState([]);
+
+  // Registry Info state
+  const [registryRoot, setRegistryRoot] = useState("HKLM");
+  const [registrySubkey, setRegistrySubkey] = useState("");
+  const [registryInfo, setRegistryInfo] = useState([]);
+  const [loadingRegistry, setLoadingRegistry] = useState(false);
+  // const [registryError, setRegistryError] = useState("");
+  const [registryPath, setRegistryPath] = useState("");
+
+  // Registry filters
+  const [filterRegAppIDs, setFilterRegAppIDs] = useState([]);
+  const [filterRegServers, setFilterRegServers] = useState([]);
+  const [appliedRegAppIDs, setAppliedRegAppIDs] = useState([]);
+  const [appliedRegServers, setAppliedRegServers] = useState([]);
+  const [textQueryReg, setTextQueryReg] = useState("");
+  const [appliedRegText, setAppliedRegText] = useState("");
+
+  // Content Verification state
+  const [appliedContentAppIDs, setAppliedContentAppIDs] = useState([]);
+  const [appliedContentServers, setAppliedContentServers] = useState([]);
+  const [appliedContentNames, setAppliedContentNames] = useState([]);
+  const [filterContentAppIDs, setFilterContentAppIDs] = useState([]);
+  const [filterContentServers, setFilterContentServers] = useState([]);
+  const [filterContentNames, setFilterContentNames] = useState([]);
+
+  // COM filters
+  const [filterComAppIDs, setFilterComAppIDs] = useState([]);
+  const [filterComServers, setFilterComServers] = useState([]);
+  const [appliedComAppIDs, setAppliedComAppIDs] = useState([]);
+  const [appliedComServers, setAppliedComServers] = useState([]);
+  const [textQueryCom, setTextQueryCom] = useState("");
+
+  const [inventory, setInventory] = useState({});
+  const [appIdOptions, setAppIdOptions] = useState([]);
+  const [selectedAppIDs, setSelectedAppIDs] = useState([]);
+  const [serverOptions, setServerOptions] = useState([]); // [{appId, servers:[{name, ip, function}]}]
+  const [selectedServers, setSelectedServers] = useState({}); // {appId: [serverName, ...]}
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [loading, setLoading] = useState(false);
+  // Remove error state, use modal Alert only
+  const [serverErrors, setServerErrors] = useState([]); // [{appId, serverName, message}]
+  const [iisWebsites, setIISWebsites] = useState([]);
+  const [iisAppPools, setIISAppPools] = useState([]);
+  const [services, setServices] = useState([]);
+  const [servicePacks, setServicePacks] = useState([]); // HotFixes
+  const [installedSoftware, setInstalledSoftware] = useState([]);
+  const [servicePacksView, setServicePacksView] = useState("hotfixes");
+  const [textQuerySP, setTextQuerySP] = useState("");
+  const [sortSPBy, setSortSPBy] = useState("HotFixID");
+  const [sortSPDir, setSortSPDir] = useState("asc");
+  const [activeTab, setActiveTab] = useState("os_patching"); // os_patching | content | iis | services | servicepacks | gac | com | registry | certificates | eventlogs
+  const [iisView, setIISView] = useState("websites"); // websites | apppools
+  const [fetchAttempted, setFetchAttempted] = useState({ websites: false, apppools: false });
+
+  // Content verification (split actions)
+  const [folderPath, setFolderPath] = useState("");
+  const [folderPathError, setFolderPathError] = useState("");
+  const [modifiedAfter, setModifiedAfter] = useState("");
+  const [modifiedBefore, setModifiedBefore] = useState("");
+  const [recurse, setRecurse] = useState(false);
+  const [maxItems, setMaxItems] = useState(500);
+  const [loadingModified, setLoadingModified] = useState(false);
+  const [loadingWeb, setLoadingWeb] = useState(false);
+  const [contentError, setContentError] = useState("");
+  const [modifiedItems, setModifiedItems] = useState([]);
+  const [webConfigInfos, setWebConfigInfos] = useState([]);
+
+  // (Legacy) Folder info state
+  const [folderInfo, setFolderInfo] = useState([]);
+  const [folderLoading, setFolderLoading] = useState(false);
+  // Removed folderError
+
+  // GAC & COM
+  const [gacAssemblies, setGacAssemblies] = useState([]);
+  const [comObjects, setComObjects] = useState([]);
+  const [loadingGAC, setLoadingGAC] = useState(false);
+  const [loadingCOM, setLoadingCOM] = useState(false);
+
+  // Certificates
+  const [certificates, setCertificates] = useState([]);
+  const [loadingCertificates, setLoadingCertificates] = useState(false);
+  const [filterCertAppIDs, setFilterCertAppIDs] = useState([]);
+  const [filterCertServers, setFilterCertServers] = useState([]);
+  const [appliedCertAppIDs, setAppliedCertAppIDs] = useState([]);
+  const [appliedCertServers, setAppliedCertServers] = useState([]);
+  const [textQueryCert, setTextQueryCert] = useState("");
+  const [sortCertBy, setSortCertBy] = useState("Subject");
+  const [sortCertDir, setSortCertDir] = useState("asc");
+
+  // Event Log state
+  const [eventChannel, setEventChannel] = useState("Application"); // Application | System | Security
+  const [eventHours, setEventHours] = useState(24);
+  const [eventStart, setEventStart] = useState("");
+  const [eventEnd, setEventEnd] = useState("");
+  const [eventMax, setEventMax] = useState(200);
+  const [events, setEvents] = useState([]);
+  const [loadingEventLogs, setLoadingEventLogs] = useState(false);
+  // Event filters shown in results area (matches other tabs)
+  const [filterEventAppIDs, setFilterEventAppIDs] = useState([]);
+  const [filterEventServers, setFilterEventServers] = useState([]);
+  const [appliedEventAppIDs, setAppliedEventAppIDs] = useState([]);
+  const [appliedEventServers, setAppliedEventServers] = useState([]);
+  const [textQueryEvent, setTextQueryEvent] = useState("");
+  const [appliedEventText, setAppliedEventText] = useState("");
+  const [showEventControls, setShowEventControls] = useState(true);
+  // Server Health Info state
+  const [osPatchingResults, setOsPatchingResults] = useState([]);
+  const [loadingOsPatching, setLoadingOsPatching] = useState(false);
+  const [osPatchingProgress, setOsPatchingProgress] = useState({ current: 0, total: 0 });
+  const [textQueryOS, setTextQueryOS] = useState("");
+  const [textQueryContent, setTextQueryContent] = useState("");
+  const [textQueryGac, setTextQueryGac] = useState("");
+  const [textQueryOSPatching, setTextQueryOSPatching] = useState("");
+  const [textQueryEvents, setTextQueryEvents] = useState("");
+
+  // DNS Tool state
+  const [dnsQuery, setDnsQuery] = useState("");
+  const [dnsType, setDnsType] = useState("A"); // A, AAAA, MX, CNAME, PTR, etc.
+  const [dnsResults, setDnsResults] = useState([]);
+  const [loadingDNS, setLoadingDNS] = useState(false);
+
+  // Remote Connectivity state
+  const [remoteHost, setRemoteHost] = useState("");
+  const [remotePorts, setRemotePorts] = useState("80,443");
+  const [connectivityResults, setConnectivityResults] = useState([]);
+  const [loadingConnectivity, setLoadingConnectivity] = useState(false);
+
+  const formatUptime = (secs) => {
+    if (!secs || isNaN(secs)) return '';
+    const s = Number(secs);
+    const days = Math.floor(s / 86400);
+    const hrs = Math.floor((s % 86400) / 3600);
+    const mins = Math.floor((s % 3600) / 60);
+    return `${days}d ${hrs}h ${mins}m`;
+  };
+
+  // --------------------- Tab and Data Handling ---------------------
+  const handleTabChange = (tab) => {
+  setActiveTab(tab);
+  // Clear previously fetched tab data so each tab starts fresh when opened.
+  // Keep persistent UI state like inventory and selected AppIDs/Servers.
+  setServerErrors([]);
+  // IIS
+  setIISWebsites([]);
+  setIISAppPools([]);
+  // Services
+  setServices([]);
+  // Service Packs / Software
+  setServicePacks([]);
+  setInstalledSoftware([]);
+  // Content / Modified / Web.config
+  setModifiedItems([]);
+  setWebConfigInfos([]);
+  setFolderInfo([]);
+  setContentError("");
+  setFolderPathError("");
+  // Registry
+  setRegistryInfo([]);
+  setRegistryPath("");
+  // GAC / COM
+  setGacAssemblies([]);
+  setComObjects([]);
+  // Certificates
+  setCertificates([]);
+  // Event logs
+  setEvents([]);
+  setShowEventControls(true);
+  // Server Health Info
+  setOsPatchingResults([]);
+  setOsPatchingProgress({ current: 0, total: 0 });
+  // DNS Tool
+  setDnsResults([]);
+  // Remote Connectivity
+  setConnectivityResults([]);
+  // Reset fetch attempt flags and loading indicators
+  setFetchAttempted({ websites: false, apppools: false });
+  setLoading(false);
+  setLoadingModified(false);
+  setLoadingWeb(false);
+  setLoadingGAC(false);
+  setLoadingCOM(false);
+  setLoadingCertificates(false);
+  setLoadingEventLogs(false);
+  setLoadingOsPatching(false);
+  setLoadingDNS(false);
+  setLoadingConnectivity(false);
+  };
+
+  // Comprehensive validation for all Get operations
+  const validateSelection = () => {
+    if (!selectedAppIDs.length) {
+      showAlert("Please select at least one AppID.");
+      return false;
+    }
+    if (!username || !password) {
+      showAlert("Username and password are required.");
+      return false;
+    }
+    
+    // Check that each selected AppID has at least one server selected
+    const appsWithoutServers = [];
+    for (const appId of selectedAppIDs) {
+      const servers = selectedServers[appId] || [];
+      if (servers.length === 0) {
+        appsWithoutServers.push(appId);
+      }
+    }
+    
+    if (appsWithoutServers.length > 0) {
+      showAlert(`Please select at least one server for AppID(s): ${appsWithoutServers.join(', ')} or remove these AppIDs from selection.`);
+      return false;
+    }
+    
+    return true;
+  };
+
+  useEffect(() => {
+    api
+      .get("/api/inventory/list")
+      .then((res) => {
+        const inv = res.data || {};
+        setInventory(inv);
+        setAppIdOptions(
+          Object.entries(inv).map(([appId, entry]) => ({ appId, appName: entry.appName }))
+        );
+      })
+      .catch(() => showAlert("Failed to load inventory."));
+  }, []);
+
+  useEffect(() => {
+    const opts = selectedAppIDs.map((appId) => ({
+      appId,
+      servers: inventory[appId]?.servers || [],
+    }));
+    setServerOptions(opts);
+    setSelectedServers((prev) => {
+      const next = {};
+      for (const appId of selectedAppIDs) {
+        next[appId] = prev[appId] || [];
+      }
+      return next;
+    });
+  }, [selectedAppIDs, inventory]);
+
+  const handleServerSelect = (appId, serverName) => {
+    setSelectedServers((prev) => {
+      const arr = prev[appId] || [];
+      return {
+        ...prev,
+        [appId]: arr.includes(serverName) ? arr.filter((s) => s !== serverName) : [...arr, serverName],
+      };
+    });
+  };
+
+  // --------- Fetchers you already had (kept) ---------
+  const fetchServices = async () => {
+    if (!validateSelection()) return;
+
+    setServerErrors([]);
+    setLoading(true);
+    setServices([]);
+
+    // Prepare server list for parallel execution
+    const servers = [];
+    for (const appId of selectedAppIDs) {
+      for (const serverName of selectedServers[appId] || []) {
+        servers.push({ appId, serverName, username, password });
+      }
+    }
+
+    try {
+      const startTime = performance.now();
+      const response = await api.post(`/api/server/parallel`, {
+        operation: "services",
+        servers: servers
+      });
+      const endTime = performance.now();
+      console.log(`Services parallel execution took ${(endTime - startTime).toFixed(2)}ms for ${servers.length} servers`);
+
+      const allServices = [];
+      const errors = [];
+
+      for (const result of response.data.results || []) {
+        const { appId, server, data, stderr, returncode } = result;
+        
+        // Add services data
+        if (data && Array.isArray(data)) {
+          data.forEach((s) => allServices.push({ ...s, _appId: appId, _server: server }));
+        }
+
+        // Handle errors
+        if (stderr && stderr.trim()) {
+          const raw = String(stderr).trim();
+          // Ignore PowerShell CLIXML/progress noise
+          if (!/^#<\s*CLIXML/i.test(raw) && !/Preparing modules for first use/i.test(raw)) {
+            errors.push({ appId, serverName: server, message: raw });
+            alertForError(raw);
+          }
+        }
+        
+        if (returncode !== 0 && !stderr) {
+          const msg = `Failed to fetch services from ${server} (exit code: ${returncode})`;
+          errors.push({ appId, serverName: server, message: msg });
+          alertForError(msg);
+        }
+      }
+
+      setServices(allServices);
+      setServerErrors(errors);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || "Failed to fetch Services.";
+      alertForError(msg);
+      setServerErrors([{ appId: 'ALL', serverName: 'ALL', message: msg }]);
+    }
+
+    setLoading(false);
+  };
+
+  const fetchServicePacks = async () => {
+    if (!validateSelection()) return;
+
+    setServerErrors([]);
+    setLoading(true);
+    setServicePacks([]);
+    setInstalledSoftware([]);
+
+    // Prepare server list for parallel execution
+    const servers = [];
+    for (const appId of selectedAppIDs) {
+      for (const serverName of selectedServers[appId] || []) {
+        servers.push({ appId, serverName, username, password });
+      }
+    }
+
+    try {
+      const startTime = performance.now();
+      const response = await api.post(`/api/server/parallel`, {
+        operation: "servicepacks",
+        servers: servers
+      });
+      const endTime = performance.now();
+      console.log(`Service Packs parallel execution took ${(endTime - startTime).toFixed(2)}ms for ${servers.length} servers`);
+
+      const allServicePacks = [];
+      const allSoftware = [];
+      const errors = [];
+
+      for (const result of response.data.results || []) {
+        const { appId, server, data, stderr, returncode } = result;
+        
+        // Normalize response shapes: prefer structured fields, then RawOutput, then stdout
+        let hotfixes = [];
+        let software = [];
+
+        if (data && data.length > 0) {
+          const firstItem = data[0] || {};
+          if (firstItem.HotFixes || firstItem.InstalledSoftware) {
+            hotfixes = Array.isArray(firstItem.HotFixes) ? firstItem.HotFixes : firstItem.HotFixes ? [firstItem.HotFixes] : [];
+            software = Array.isArray(firstItem.InstalledSoftware)
+              ? firstItem.InstalledSoftware
+              : firstItem.InstalledSoftware
+              ? [firstItem.InstalledSoftware]
+              : [];
+          } else if (firstItem.RawOutput) {
+            try {
+              const parsed = JSON.parse(firstItem.RawOutput || "") || {};
+              hotfixes = Array.isArray(parsed.HotFixes) ? parsed.HotFixes : parsed.HotFixes ? [parsed.HotFixes] : [];
+              software = Array.isArray(parsed.InstalledSoftware)
+                ? parsed.InstalledSoftware
+                : parsed.InstalledSoftware
+                ? [parsed.InstalledSoftware]
+                : [];
+            } catch {
+              // ignore
+            }
+          }
+        }
+
+        hotfixes.forEach((sp) => allServicePacks.push({ ...sp, _appId: appId, _server: server }));
+        software.forEach((sw) => allSoftware.push({ ...sw, _appId: appId, _server: server }));
+
+        // Handle errors
+        if (stderr && stderr.trim()) {
+          const raw = String(stderr).trim();
+          if (!/^#<\s*CLIXML/i.test(raw) && !/Preparing modules for first use/i.test(raw)) {
+            errors.push({
+              appId,
+              serverName: server,
+              message: raw,
+              stderr: raw,
+              RawOutput: RawOutput || rawOutput || null,
+              raw_stdout_b64: raw_stdout_b64 || null,
+              minorFailure: minorFailure || false,
+              debugAttempts: debugAttempts || null,
+              successAttempt: (typeof successAttempt !== 'undefined') ? successAttempt : null
+            });
+            alertForError(raw);
+          }
+        }
+        
+        if (returncode !== 0 && !stderr) {
+          const msg = `Failed to fetch service packs from ${server} (exit code: ${returncode})`;
+          errors.push({ appId, serverName: server, message: msg });
+          alertForError(msg);
+        }
+      }
+
+      setServicePacks(allServicePacks);
+      setInstalledSoftware(allSoftware);
+      setServerErrors(errors);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || "Failed to fetch Service Packs.";
+      alertForError(msg);
+      setServerErrors([{ appId: 'ALL', serverName: 'ALL', message: msg }]);
+    }
+
+    setLoading(false);
+  };
+
+  // --------- Content Verification helpers ---------
+  const fmtLocalDT = (s) => {
+    if (!s) return null;
+    return s.replace("T", " ") + (s.length <= 16 ? ":00" : "");
+  };
+
+  const validateFolderPath = (path) => {
+    if (!path?.trim()) {
+      return { isValid: false, message: "Folder path is required" };
+    }
+
+    const trimmedPath = path.trim();
+    
+    // Check for wildcards
+    const wildcards = ['*', '?', '[', ']'];
+    const hasWildcards = wildcards.some(wildcard => trimmedPath.includes(wildcard));
+    if (hasWildcards) {
+      return { 
+        isValid: false, 
+        message: "Folder path cannot contain wildcards (* ? [ ]). Please enter a specific folder path." 
+      };
+    }
+
+    // Check for invalid Windows path characters
+    const invalidChars = ['<', '>', '|', '"'];
+    const hasInvalidChars = invalidChars.some(char => trimmedPath.includes(char));
+    if (hasInvalidChars) {
+      return { 
+        isValid: false, 
+        message: "Folder path contains invalid characters (< > | \"). Please enter a valid Windows path." 
+      };
+    }
+
+    // Check if it looks like a valid Windows path structure
+    const windowsPathRegex = /^[a-zA-Z]:\\(?:[^\\/:*?"<>|]+\\)*[^\\/:*?"<>|]*$/;
+    const uncPathRegex = /^\\\\[^\\/:*?"<>|]+\\[^\\/:*?"<>|]+(?:\\[^\\/:*?"<>|]*)*$/;
+    
+    if (!windowsPathRegex.test(trimmedPath) && !uncPathRegex.test(trimmedPath)) {
+      return { 
+        isValid: false, 
+        message: "Please enter a valid Windows folder path (e.g., C:\\folder\\subfolder or \\\\server\\share\\folder)" 
+      };
+    }
+
+    // Check for consecutive backslashes (except UNC paths)
+    if (!trimmedPath.startsWith('\\\\') && trimmedPath.includes('\\\\')) {
+      return { 
+        isValid: false, 
+        message: "Folder path cannot contain consecutive backslashes. Please use single backslashes." 
+      };
+    }
+
+    // Check for trailing backslash (optional - we can auto-correct this)
+    // Most Windows operations work fine with or without trailing backslashes
+
+    return { isValid: true, message: "" };
+  };
+
+  const handleFolderPathChange = (value) => {
+    setFolderPath(value);
+    
+    // Real-time validation
+    if (value.trim()) {
+      const validation = validateFolderPath(value);
+      setFolderPathError(validation.isValid ? "" : validation.message);
+    } else {
+      setFolderPathError("");
+    }
+  };
+
+  const fetchModifiedItems = async () => {
+    if (!validateSelection()) return;
+    
+    // Validate folder path
+    const pathValidation = validateFolderPath(folderPath);
+    if (!pathValidation.isValid) {
+      return showAlert(pathValidation.message);
+    }
+
+    // Validate date range
+    if (modifiedAfter && modifiedBefore) {
+      const afterDate = new Date(modifiedAfter);
+      const beforeDate = new Date(modifiedBefore);
+      
+      if (afterDate >= beforeDate) {
+        return showAlert("'Modified After' date must be earlier than 'Modified Before' date", "error");
+      }
+    }
+
+    // Validate dates are not in the future
+    const now = new Date();
+    if (modifiedAfter && new Date(modifiedAfter) > now) {
+      return showAlert("'Modified After' date cannot be in the future", "error");
+    }
+    if (modifiedBefore && new Date(modifiedBefore) > now) {
+      return showAlert("'Modified Before' date cannot be in the future", "error");
+    }
+
+    setModifiedItems([]);
+    setWebConfigInfos([]);
+    setLoadingModified(true);
+
+    // Prepare server list for parallel execution
+    const servers = [];
+    for (const appId of selectedAppIDs) {
+      for (const serverName of selectedServers[appId] || []) {
+        servers.push({ appId, serverName, username, password });
+      }
+    }
+
+    try {
+      const startTime = performance.now();
+      
+      // Format dates for API - ensure proper timezone handling
+      // datetime-local gives us local time without timezone, so we need to be explicit
+      const formattedAfter = modifiedAfter ? new Date(modifiedAfter).toISOString() : null;
+      const formattedBefore = modifiedBefore ? new Date(modifiedBefore).toISOString() : null;
+      
+      console.log('Content Verification Request:', {
+        folderPath,
+        modifiedAfter,
+        modifiedBefore,
+        formattedAfter,
+        formattedBefore,
+        recurse,
+        maxItems,
+        serversCount: servers.length,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      });
+      
+      const response = await api.post(`/api/server/content_verification_parallel`, {
+        servers: servers,
+        modified_items_path: folderPath,
+        modified_after: formattedAfter,
+        modified_before: formattedBefore,
+        recurse: recurse,
+        max_items: maxItems
+      }, { timeout: 180000 });
+      
+      const endTime = performance.now();
+      const duration = ((endTime - startTime) / 1000).toFixed(2);
+      
+      console.log(`Content Verification parallel execution took ${duration}s for ${servers.length} servers`);
+
+      const out = [];
+      for (const result of response.data.results || []) {
+        const { appId, server, data } = result;
+        let processedData = {};
+        
+        if (Array.isArray(data) && data.length > 0) {
+          // Try to parse if it's JSON string data
+          try {
+            processedData = typeof data[0] === 'string' ? JSON.parse(data[0]) : data[0];
+          } catch {
+            processedData = data[0] || {};
+          }
+        }
+        
+        out.push({ _appId: appId, _server: server, ...processedData });
+      }
+      
+      setModifiedItems(out);
+      
+      // Show success message with details
+      const totalItems = out.reduce((total, item) => total + (item.Items?.length || 0), 0);
+      const dateRange = formattedAfter || formattedBefore ? 
+        ` (${formattedAfter ? 'after ' + new Date(formattedAfter).toLocaleString() : ''}${formattedAfter && formattedBefore ? ', ' : ''}${formattedBefore ? 'before ' + new Date(formattedBefore).toLocaleString() : ''})` : '';
+      
+      showAlert(`✅ Found ${totalItems} items across ${servers.length} servers in ${duration}s${dateRange}`, "success");
+      
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || "Failed to fetch modified items";
+      if (!alertForError(msg)) showAlert(msg);
+    } finally {
+      setLoadingModified(false);
+    }
+  };
+
+  const fetchWebConfig = async () => {
+    if (!validateSelection()) return;
+    
+    // Validate folder path
+    const pathValidation = validateFolderPath(folderPath);
+    if (!pathValidation.isValid) {
+      return showAlert(pathValidation.message);
+    }
+
+    setWebConfigInfos([]);
+    setModifiedItems([]);
+    setLoadingWeb(true);
+
+    // Prepare server list for parallel execution
+    const servers = [];
+    for (const appId of selectedAppIDs) {
+      for (const serverName of selectedServers[appId] || []) {
+        servers.push({ appId, serverName, username, password });
+      }
+    }
+
+    try {
+      const startTime = performance.now();
+      const response = await api.post(`/api/server/webconfig_parallel`, {
+        servers: servers,
+        webconfig_path: folderPath
+      }, { timeout: 180000 });
+      const endTime = performance.now();
+      console.log(`Web Config parallel execution took ${(endTime - startTime).toFixed(2)}ms for ${servers.length} servers`);
+
+      const out = [];
+      for (const result of response.data.results || []) {
+        const { appId, server, data, stderr, returncode } = result;
+        
+        let parsed = {};
+        if (Array.isArray(data) && data.length > 0) {
+          try {
+            parsed = typeof data[0] === 'string' ? JSON.parse(data[0]) : data[0];
+          } catch {
+            parsed = data[0] || {};
+          }
+        }
+
+        if (parsed && parsed.WebConfigBase64) {
+          out.push({ appId, serverName: server, status: 'available', available: true });
+        } else if (parsed && parsed.Error) {
+          out.push({ appId, serverName: server, status: 'notfound', message: parsed.Error });
+        } else if (stderr && stderr.trim()) {
+          out.push({ appId, serverName: server, status: 'error', message: stderr });
+        } else {
+          out.push({ appId, serverName: server, status: 'unknown', message: 'No web.config information returned' });
+        }
+      }
+      setWebConfigInfos(out);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || "Failed to fetch Web.config status.";
+      if (!alertForError(msg)) showAlert(msg);
+    } finally {
+      setLoadingWeb(false);
+    }
+  };
+
+  const handleDownloadWebConfig = async (entry) => {
+    try {
+      const res = await downloadWebConfig({ appId: entry.appId, serverName: entry.serverName, username, password, folderPath, maxChars: 200000 });
+      // res.data is a Blob
+      const blob = new Blob([res.data], { type: res.headers['content-type'] || 'application/octet-stream' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const filename = `${entry.appId || 'app'}_${entry.serverName || 'server'}_webconfig.config`;
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || 'Failed to download web.config';
+      showAlert(msg);
+    }
+  };
+
+  // --------- Registry Info ---------
+  const fetchRegistryInfo = async (pathTrimmed) => {
+    if (!validateSelection()) return;
+    if (pathTrimmed.split("\\").length <= 2) {
+      showAlert("Registry path is too broad. Please specify a full subkey path.");
+      return;
+    }
+    setRegistryInfo([]);
+    setLoadingRegistry(true);
+
+    // Prepare server list for parallel execution
+    const servers = [];
+    for (const appId of selectedAppIDs) {
+      for (const serverName of selectedServers[appId] || []) {
+        servers.push({ appId, serverName, username, password });
+      }
+    }
+
+    try {
+      const startTime = performance.now();
+      const response = await api.post(`/api/server/parallel`, {
+        operation: "registryinfo",
+        servers: servers,
+        params: {
+          registryPath: pathTrimmed
+        }
+      });
+      const endTime = performance.now();
+      console.log(`Registry Info parallel execution took ${(endTime - startTime).toFixed(2)}ms for ${servers.length} servers`);
+
+      const out = [];
+      for (const result of response.data.results || []) {
+        const { appId, server, data } = result;
+        // Registry info returns raw text output directly in data field
+        const registryEntry = {
+          _appId: appId,
+          _server: server,
+          AppID: appId,
+          Server: server,
+          RawOutput: data || ""
+        };
+        out.push(registryEntry);
+      }
+      setRegistryInfo(out);
+    } catch {
+      // silent per your note
+    } finally {
+      setLoadingRegistry(false);
+    }
+  };
+
+  // --------- IIS, GAC, COM (safe stubs; adjust endpoints as needed) ---------
+  const fetchIISWebsites = async () => {
+    if (!validateSelection()) return;
+
+    setLoading(true);
+    setServerErrors([]);
+    setIISWebsites([]);
+
+    // Prepare server list for parallel execution
+    const servers = [];
+    for (const appId of selectedAppIDs) {
+      for (const serverName of selectedServers[appId] || []) {
+        servers.push({ appId, serverName, username, password });
+      }
+    }
+
+    try {
+      const startTime = performance.now();
+      const response = await api.post(`/api/server/parallel`, {
+        operation: "iis",
+        servers: servers
+      });
+      const endTime = performance.now();
+      console.log(`IIS Websites parallel execution took ${(endTime - startTime).toFixed(2)}ms for ${servers.length} servers`);
+
+      const all = [];
+      const errors = [];
+
+      for (const result of response.data.results || []) {
+        const { appId, server, data, stderr, returncode } = result;
+        
+        // Add IIS data
+        if (data && Array.isArray(data)) {
+          data.forEach((r) => all.push({ ...r, _appId: appId, _server: server }));
+        }
+
+        // Handle errors
+        if (stderr && stderr.trim()) {
+          const raw = String(stderr).trim();
+          if (!/^#<\s*CLIXML/i.test(raw) && !/Preparing modules for first use/i.test(raw)) {
+            errors.push({ appId, serverName: server, message: raw });
+            alertForError(raw);
+          }
+        }
+        
+        if (returncode !== 0 && !stderr) {
+          const msg = `Failed to fetch IIS websites from ${server} (exit code: ${returncode})`;
+          errors.push({ appId, serverName: server, message: msg });
+          alertForError(msg);
+        }
+      }
+
+      setIISWebsites(all);
+      setServerErrors(errors);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || "IIS websites failed.";
+      alertForError(msg);
+      setServerErrors([{ appId: 'ALL', serverName: 'ALL', message: msg }]);
+    }
+
+    setLoading(false);
+  };
+
+  const fetchIISAppPools = async () => {
+    if (!validateSelection()) return;
+
+    setLoading(true);
+    setServerErrors([]);
+    setIISAppPools([]);
+
+    // Prepare server list for parallel execution
+    const servers = [];
+    for (const appId of selectedAppIDs) {
+      for (const serverName of selectedServers[appId] || []) {
+        servers.push({ appId, serverName, username, password });
+      }
+    }
+
+    try {
+      const startTime = performance.now();
+      const response = await api.post(`/api/server/parallel`, {
+        operation: "apppools",
+        servers: servers
+      });
+      const endTime = performance.now();
+      console.log(`IIS App Pools parallel execution took ${(endTime - startTime).toFixed(2)}ms for ${servers.length} servers`);
+
+      const all = [];
+      const errors = [];
+
+      for (const result of response.data.results || []) {
+        const { appId, server, data, stderr, returncode } = result;
+        
+        // Add IIS App Pools data
+        if (data && Array.isArray(data)) {
+          data.forEach((r) => all.push({ ...r, _appId: appId, _server: server }));
+        }
+
+        // Handle errors
+        if (stderr && stderr.trim()) {
+          const raw = String(stderr).trim();
+          if (!/^#<\s*CLIXML/i.test(raw) && !/Preparing modules for first use/i.test(raw)) {
+            errors.push({ appId, serverName: server, message: raw });
+            alertForError(raw);
+          }
+        }
+        
+        if (returncode !== 0 && !stderr) {
+          const msg = `Failed to fetch IIS app pools from ${server} (exit code: ${returncode})`;
+          errors.push({ appId, serverName: server, message: msg });
+          alertForError(msg);
+        }
+      }
+
+      setIISAppPools(all);
+      setServerErrors(errors);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || "IIS app pools failed.";
+      alertForError(msg);
+      setServerErrors([{ appId: 'ALL', serverName: 'ALL', message: msg }]);
+    }
+
+    setLoading(false);
+  };
+
+  const fetchGAC = async () => {
+    if (!validateSelection()) return;
+
+    setLoadingGAC(true);
+
+    // Prepare server list for parallel execution
+    const servers = [];
+    for (const appId of selectedAppIDs) {
+      for (const serverName of selectedServers[appId] || []) {
+        servers.push({ appId, serverName, username, password });
+      }
+    }
+
+    try {
+      const startTime = performance.now();
+      const response = await api.post(`/api/server/parallel`, {
+        operation: "gac",
+        servers: servers
+      });
+      const endTime = performance.now();
+      console.log(`GAC parallel execution took ${(endTime - startTime).toFixed(2)}ms for ${servers.length} servers`);
+
+      const out = [];
+      for (const result of response.data.results || []) {
+        const { appId, server, data } = result;
+        let items = Array.isArray(data) ? data : [];
+        out.push({ _appId: appId, _server: server, Items: items });
+      }
+
+      setGacAssemblies(out);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || "Failed to fetch GAC assemblies";
+      if (!alertForError(msg)) showAlert(msg);
+    } finally {
+      setLoadingGAC(false);
+    }
+  };
+
+  const fetchCOM = async () => {
+    if (!validateSelection()) return;
+
+    setLoadingCOM(true);
+
+    // Prepare server list for parallel execution
+    const servers = [];
+    for (const appId of selectedAppIDs) {
+      for (const serverName of selectedServers[appId] || []) {
+        servers.push({ appId, serverName, username, password });
+      }
+    }
+
+    try {
+      const startTime = performance.now();
+      const response = await api.post(`/api/server/parallel`, {
+        operation: "comobjects",
+        servers: servers
+      });
+      const endTime = performance.now();
+      console.log(`COM Objects parallel execution took ${(endTime - startTime).toFixed(2)}ms for ${servers.length} servers`);
+
+      const out = [];
+      for (const result of response.data.results || []) {
+        const { appId, server, data } = result;
+        let items = Array.isArray(data) ? data : [];
+        out.push({ _appId: appId, _server: server, Items: items });
+      }
+
+      setComObjects(out);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || "Failed to fetch COM objects";
+      if (!alertForError(msg)) showAlert(msg);
+    } finally {
+      setLoadingCOM(false);
+    }
+  };
+
+  const fetchCertificates = async () => {
+    if (!validateSelection()) return;
+
+    setLoadingCertificates(true);
+
+    // Prepare server list for parallel execution
+    const servers = [];
+    for (const appId of selectedAppIDs) {
+      for (const serverName of selectedServers[appId] || []) {
+        servers.push({ appId, serverName, username, password });
+      }
+    }
+
+    try {
+      const startTime = performance.now();
+      const response = await api.post(`/api/server/parallel`, {
+        operation: "certificates",
+        servers: servers
+      }, { timeout: 180000 }); // Extended timeout for certificates
+      const endTime = performance.now();
+      console.log(`Certificates parallel execution took ${(endTime - startTime).toFixed(2)}ms for ${servers.length} servers`);
+
+      const out = [];
+      const errors = [];
+
+      for (const result of response.data.results || []) {
+        const { appId, server, data, stderr, returncode } = result;
+        
+        // Process certificate data
+        let items = Array.isArray(data) ? data : [];
+        // normalize each cert item and preserve both Issuer/IssuedBy variants
+        items = items.map((c) => ({
+          Subject: c.Subject ?? "",
+          // backend may emit Issuer or IssuedBy; keep both to be robust
+          Issuer: c.Issuer ?? c.IssuedBy ?? "",
+          IssuedBy: c.IssuedBy ?? c.Issuer ?? "",
+          Thumbprint: c.Thumbprint ?? "",
+          SerialNumber: c.SerialNumber ?? c.Serial ?? c.Thumbprint ?? "",
+          Store: c.Store ?? "",
+          NotBefore: c.NotBefore ?? "",
+          NotAfter: c.NotAfter ?? "",
+          Valid: typeof c.Valid === "boolean" ? (c.Valid ? "Yes" : "No") : (c.Valid ?? ""),
+          _appId: appId,
+          _server: server,
+        }));
+        items.forEach((it) => out.push(it));
+
+        // Handle errors
+        if (stderr && stderr.trim()) {
+          const raw = String(stderr).trim();
+          if (!/^#<\s*CLIXML/i.test(raw) && !/Preparing modules for first use/i.test(raw)) {
+            errors.push({ appId, serverName: server, message: raw });
+            alertForError(raw);
+          }
+        }
+        
+        if (returncode !== 0 && !stderr) {
+          const msg = `Failed to fetch certificates from ${server} (exit code: ${returncode})`;
+          errors.push({ appId, serverName: server, message: msg });
+          alertForError(msg);
+        }
+      }
+
+      setCertificates(out);
+      setServerErrors((prev) => [...prev, ...errors]);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || "Failed to fetch certificates";
+      alertForError(msg);
+      setServerErrors([{ appId: 'ALL', serverName: 'ALL', message: msg }]);
+    } finally {
+      setLoadingCertificates(false);
+    }
+  };
+
+  const fetchEventLogs = async () => {
+    if (!validateSelection()) return;
+    
+    setLoadingEventLogs(true);
+    setEvents([]);
+
+    // Prepare server list for parallel execution
+    const servers = [];
+    for (const appId of selectedAppIDs) {
+      for (const serverName of selectedServers[appId] || []) {
+        servers.push({ appId, serverName, username, password });
+      }
+    }
+
+    try {
+      const startTime = performance.now();
+      
+      // Calculate date range - use explicit dates if provided, otherwise use hours
+      let calculatedStart = eventStart;
+      let calculatedEnd = eventEnd;
+      
+      if (!eventStart && !eventEnd) {
+        // Use eventHours to calculate start time
+        const now = new Date();
+        const hoursAgo = new Date(now.getTime() - (eventHours * 60 * 60 * 1000));
+        calculatedStart = hoursAgo.toISOString().slice(0, 19); // Format: YYYY-MM-DDTHH:mm:ss
+        calculatedEnd = now.toISOString().slice(0, 19);
+      }
+      
+      const response = await api.post(`/api/server/parallel`, {
+        operation: "eventlogs",
+        servers: servers,
+        params: {
+          logName: eventChannel,
+          maxEvents: eventMax,
+          startTime: calculatedStart || "",
+          endTime: calculatedEnd || "",
+          hours: (!eventStart && !eventEnd) ? eventHours : null // Fallback for backend
+        }
+      }, { timeout: 180000 }); // Extended timeout for event logs
+      const endTime = performance.now();
+      console.log(`Event Logs parallel execution took ${(endTime - startTime).toFixed(2)}ms for ${servers.length} servers`);
+
+      const out = [];
+      const errors = [];
+
+      for (const result of response.data.results || []) {
+        const { appId, server, data, stderr, returncode } = result;
+        
+        let rows = [];
+        let debugInfo = null;
+        
+        // Backend returns array of events
+        if (Array.isArray(data)) {
+          // Check if this is debug info (no events found)
+          if (data.length === 1 && data[0].Message && data[0].Message.includes("No events found")) {
+            debugInfo = data[0];
+          } else if (data.length === 1 && data[0].Error && data[0].Error.includes("No events were found")) {
+            // Handle the traditional "No events found" error
+            debugInfo = {
+              Message: "No events found in the specified time range",
+              Channel: eventChannel,
+              StartTime: calculatedStart || "Not specified",
+              EndTime: calculatedEnd || "Not specified",
+              QueryType: (!eventStart && !eventEnd) ? `Last ${eventHours} hours` : "Date Range"
+            };
+          } else {
+            rows = data;
+          }
+        } else if (data && data.length > 0) {
+          // Handle various response formats
+          const firstItem = data[0] || {};
+          if (Array.isArray(firstItem.Events)) {
+            rows = firstItem.Events;
+          } else if (firstItem.RawOutput) {
+            try {
+              const parsed = JSON.parse(firstItem.RawOutput || "");
+              if (Array.isArray(parsed)) rows = parsed;
+              else if (parsed && typeof parsed === 'object') rows = [parsed];
+            } catch (e) {
+              const lines = String(firstItem.RawOutput || '').split(/\r?\n/).filter((ln) => ln.trim() !== '');
+              rows = lines.map((ln) => ({ Message: ln }));
+            }
+          }
+        }
+
+        // Ensure each event has _appId and _server for filtering/grouping
+        rows.forEach((r) => out.push({ ...r, _appId: appId, _server: server }));
+
+        // Store debug info for "no events found" cases
+        if (debugInfo) {
+          console.log(`No events found for ${appId}/${server}:`, debugInfo);
+          // Add a special entry to track which servers had no events
+          out.push({ 
+            _appId: appId, 
+            _server: server, 
+            _isDebugInfo: true,
+            Message: debugInfo.Message || "No events found in time range",
+            Channel: debugInfo.Channel || eventChannel,
+            QueryType: debugInfo.QueryType || "Unknown",
+            TimeCreated: new Date().toISOString()
+          });
+        }
+
+        // Handle errors
+        if (stderr && stderr.trim()) {
+          const raw = String(stderr).trim();
+          if (!/^#<\s*CLIXML/i.test(raw) && !/Preparing modules for first use/i.test(raw)) {
+            errors.push({ appId, serverName: server, message: raw });
+            alertForError(raw);
+          }
+        }
+        
+        if (returncode !== 0 && !stderr) {
+          const msg = `Failed to fetch event logs from ${server} (exit code: ${returncode})`;
+          errors.push({ appId, serverName: server, message: msg });
+          alertForError(msg);
+        }
+      }
+
+      setEvents(out);
+      setServerErrors((prev) => [...prev, ...errors]);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || 'Failed to fetch Event Logs';
+      setServerErrors((prev) => [...prev, { appId: 'ALL', serverName: 'ALL', message: msg }]);
+      alertForError(msg);
+    } finally {
+      setLoadingEventLogs(false);
+      setShowEventControls(false);
+    }
+  };
+
+  // --------- Render Functions ---------
+  const fmtEventTime = (t) => {
+    if (!t) return "";
+    try {
+      // If it's an object with DateTime field
+      const str = typeof t === "string" ? t : (t?.DateTime || t?.ToString?.() || String(t));
+      const dt = new Date(str);
+      if (isNaN(dt.getTime())) return String(t);
+      return dt.toLocaleString();
+    } catch {
+      return String(t);
+    }
+  };
+  const renderWebConfigStatusTable = () => {
+    if (webConfigInfos.length === 0) return null;
+    return (
+      <div className="bg-gray-50 p-4 rounded-xl shadow mt-4">
+        <table className="min-w-full border rounded-xl mt-2 text-sm">
+          <thead>
+            <tr>
+              <th className="text-left px-3 py-2 border-b">AppID</th>
+              <th className="text-left px-3 py-2 border-b">Server</th>
+              <th className="text-left px-3 py-2 border-b">Status</th>
+              <th className="text-left px-3 py-2 border-b">Action</th>
+            </tr>
+          </thead>
+        <tbody>
+            {webConfigInfos.map((r, i) => (
+              <tr key={i}>
+                <td className="px-3 py-2 border-b">{r.appId}</td>
+                <td className="px-3 py-2 border-b">{r.serverName}</td>
+                <td className="px-3 py-2 border-b">
+                  {r.status === 'available' ? (
+                    <span className="inline-flex items-center gap-2 text-green-600 font-semibold">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 00-1.414-1.414L8 11.172 4.707 7.879A1 1 0 003.293 9.293l4 4a1 1 0 001.414 0l8-8z" clipRule="evenodd" />
+                      </svg>
+                      Available
+                    </span>
+                  ) : r.status === 'notfound' ? (
+                    <span className="inline-flex items-center gap-2 text-red-600 font-semibold">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-10.707a1 1 0 00-1.414-1.414L10 8.586 7.707 6.293a1 1 0 00-1.414 1.414L8.586 10l-2.293 2.293a1 1 0 001.414 1.414L10 11.414l2.293 2.293a1 1 0 001.414-1.414L11.414 10l2.293-2.293z" clipRule="evenodd" />
+                      </svg>
+                      Not found
+                    </span>
+                  ) : r.status === 'error' ? (
+                    <span className="text-red-600">Error</span>
+                  ) : (
+                    <span className="text-gray-600">{r.status}</span>
+                  )}
+                </td>
+                <td className="px-3 py-2 border-b">
+                  {r.status === 'available' ? (
+                    <button className="px-3 py-1 rounded bg-blue-700 text-white" onClick={() => handleDownloadWebConfig(r)}>Download</button>
+                  ) : r.status === 'notfound' ? (
+                    <span className="text-gray-500">N/A</span>
+                  ) : r.status === 'error' ? (
+                    <span className="text-red-600">Error</span>
+                  ) : (
+                    <span className="text-gray-600">{r.status}</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
+  return (
+  <div className="bg-white rounded-2xl shadow-xl p-10 w-[80vw] max-w-none border border-blue-200 mx-auto min-h-[calc(100vh-100px)] relative">
+      {alertMessage && (
+        <Alert type={alertType} onClose={closeAlert}>
+          {alertMessage}
+        </Alert>
+      )}
+      {/* Home button */}
+      <a
+        href="/"
+        title="Home"
+        className="absolute top-6 right-6 z-10 bg-gradient-to-br from-blue-500 to-blue-700 hover:from-blue-600 hover:to-blue-900 text-white rounded-full w-12 h-12 flex items-center justify-center shadow-lg transition-all border-2 border-white focus:outline-none focus:ring-2 focus:ring-blue-300"
+        style={{ boxShadow: "0 2px 8px 0 rgba(30,64,175,0.15)" }}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-7 h-7">
+          <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7A1 1 0 003 11h1v6a1 1 0 001 1h3a1 1 0 001-1v-3h2v3a1 1 0 001 1h3a1 1 0 001-1v-6h1a1 1 0 00.707-1.707l-7-7z" />
+        </svg>
+      </a>
+
+      <div className="mb-8 text-center">
+        <div>
+          <h2 className="text-3xl font-bold tracking-wide text-slate-800">
+            Windows Server Management Hub
+          </h2>
+          <p className="text-slate-600 text-sm mt-1 font-medium">
+            Comprehensive server monitoring and management platform
+          </p>
+        </div>
+      </div>
+
+      <div className="mb-8 flex flex-wrap gap-3 justify-center p-4 bg-gradient-to-r from-slate-50 to-gray-50 rounded-2xl border border-gray-200 shadow-inner">
+        {/* Server Health Info - Priority #1 */}
+        <button
+          className={`group relative px-6 py-3 rounded-2xl font-semibold shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-emerald-300 focus:ring-offset-2 ${
+            activeTab === "os_patching" 
+              ? "bg-gradient-to-br from-emerald-500 via-emerald-600 to-emerald-700 text-white shadow-emerald-300/50" 
+              : "bg-white text-emerald-700 border-2 border-emerald-200 hover:border-emerald-400 hover:bg-emerald-50"
+          }`}
+          onClick={() => handleTabChange("os_patching")}
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-lg">🏥</span>
+            Server Health Info
+          </span>
+          {activeTab === "os_patching" && (
+            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-16 h-1 bg-white rounded-full"></div>
+          )}
+        </button>
+
+        {/* Content Verification - Priority #2 */}
+        <button
+          className={`group relative px-6 py-3 rounded-2xl font-semibold shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-teal-300 focus:ring-offset-2 ${
+            activeTab === "content"
+              ? "bg-gradient-to-br from-teal-500 via-teal-600 to-teal-700 text-white shadow-teal-300/50"
+              : "bg-white text-teal-700 border-2 border-teal-200 hover:border-teal-400 hover:bg-teal-50"
+          }`}
+          onClick={() => handleTabChange("content")}
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-lg">📋</span>
+            Deployment Verification
+          </span>
+          {activeTab === "content" && (
+            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-16 h-1 bg-white rounded-full"></div>
+          )}
+        </button>
+
+        {/* IIS Info - Priority #3 */}
+        <button
+          className={`group relative px-6 py-3 rounded-2xl font-semibold shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-300 focus:ring-offset-2 ${
+            activeTab === "iis" 
+              ? "bg-gradient-to-br from-blue-500 via-blue-600 to-blue-700 text-white shadow-blue-300/50" 
+              : "bg-white text-blue-700 border-2 border-blue-200 hover:border-blue-400 hover:bg-blue-50"
+          }`}
+          onClick={() => handleTabChange("iis")}
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-lg">🌐</span>
+            IIS Info
+          </span>
+          {activeTab === "iis" && (
+            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-16 h-1 bg-white rounded-full"></div>
+          )}
+        </button>
+
+        {/* Services */}
+        <button
+          className={`group relative px-6 py-3 rounded-2xl font-semibold shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-purple-300 focus:ring-offset-2 ${
+            activeTab === "services"
+              ? "bg-gradient-to-br from-purple-500 via-purple-600 to-purple-700 text-white shadow-purple-300/50"
+              : "bg-white text-purple-700 border-2 border-purple-200 hover:border-purple-400 hover:bg-purple-50"
+          }`}
+          onClick={() => handleTabChange("services")}
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-lg">⚙️</span>
+            Services
+          </span>
+          {activeTab === "services" && (
+            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-16 h-1 bg-white rounded-full"></div>
+          )}
+        </button>
+
+        {/* Event Logs */}
+        <button
+          className={`group relative px-6 py-3 rounded-2xl font-semibold shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-orange-300 focus:ring-offset-2 ${
+            activeTab === "eventlogs" 
+              ? "bg-gradient-to-br from-orange-500 via-orange-600 to-orange-700 text-white shadow-orange-300/50" 
+              : "bg-white text-orange-700 border-2 border-orange-200 hover:border-orange-400 hover:bg-orange-50"
+          }`}
+          onClick={() => handleTabChange("eventlogs")}
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-lg">📊</span>
+            Event Logs
+          </span>
+          {activeTab === "eventlogs" && (
+            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-16 h-1 bg-white rounded-full"></div>
+          )}
+        </button>
+
+        {/* Certificates */}
+        <button
+          className={`group relative px-6 py-3 rounded-2xl font-semibold shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-red-300 focus:ring-offset-2 ${
+            activeTab === "certificates" 
+              ? "bg-gradient-to-br from-red-500 via-red-600 to-red-700 text-white shadow-red-300/50" 
+              : "bg-white text-red-700 border-2 border-red-200 hover:border-red-400 hover:bg-red-50"
+          }`}
+          onClick={() => handleTabChange("certificates")}
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-lg">🔒</span>
+            Certificates
+          </span>
+          {activeTab === "certificates" && (
+            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-16 h-1 bg-white rounded-full"></div>
+          )}
+        </button>
+
+        {/* Service Packs */}
+        <button
+          className={`group relative px-6 py-3 rounded-2xl font-semibold shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-indigo-300 focus:ring-offset-2 ${
+            activeTab === "servicepacks"
+              ? "bg-gradient-to-br from-indigo-500 via-indigo-600 to-indigo-700 text-white shadow-indigo-300/50"
+              : "bg-white text-indigo-700 border-2 border-indigo-200 hover:border-indigo-400 hover:bg-indigo-50"
+          }`}
+          onClick={() => handleTabChange("servicepacks")}
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-lg">📦</span>
+            Service Packs
+          </span>
+          {activeTab === "servicepacks" && (
+            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-16 h-1 bg-white rounded-full"></div>
+          )}
+        </button>
+
+        {/* GAC Assemblies */}
+        <button
+          className={`group relative px-6 py-3 rounded-2xl font-semibold shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-cyan-300 focus:ring-offset-2 ${
+            activeTab === "gac" 
+              ? "bg-gradient-to-br from-cyan-500 via-cyan-600 to-cyan-700 text-white shadow-cyan-300/50" 
+              : "bg-white text-cyan-700 border-2 border-cyan-200 hover:border-cyan-400 hover:bg-cyan-50"
+          }`}
+          onClick={() => handleTabChange("gac")}
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-lg">🔧</span>
+            GAC Assemblies
+          </span>
+          {activeTab === "gac" && (
+            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-16 h-1 bg-white rounded-full"></div>
+          )}
+        </button>
+
+        {/* COM Objects */}
+        <button
+          className={`group relative px-6 py-3 rounded-2xl font-semibold shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-pink-300 focus:ring-offset-2 ${
+            activeTab === "com" 
+              ? "bg-gradient-to-br from-pink-500 via-pink-600 to-pink-700 text-white shadow-pink-300/50" 
+              : "bg-white text-pink-700 border-2 border-pink-200 hover:border-pink-400 hover:bg-pink-50"
+          }`}
+          onClick={() => handleTabChange("com")}
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-lg">🔗</span>
+            COM Objects
+          </span>
+          {activeTab === "com" && (
+            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-16 h-1 bg-white rounded-full"></div>
+          )}
+        </button>
+
+        {/* Registry Info */}
+        <button
+          className={`group relative px-6 py-3 rounded-2xl font-semibold shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-yellow-300 focus:ring-offset-2 ${
+            activeTab === "registry"
+              ? "bg-gradient-to-br from-yellow-500 via-yellow-600 to-yellow-700 text-white shadow-yellow-300/50"
+              : "bg-white text-yellow-700 border-2 border-yellow-200 hover:border-yellow-400 hover:bg-yellow-50"
+          }`}
+          onClick={() => handleTabChange("registry")}
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-lg">📋</span>
+            Registry Info
+          </span>
+          {activeTab === "registry" && (
+            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-16 h-1 bg-white rounded-full"></div>
+          )}
+        </button>
+
+        {/* DNS Tool */}
+        <button
+          className={`group relative px-6 py-3 rounded-2xl font-semibold shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-green-300 focus:ring-offset-2 ${
+            activeTab === "dns"
+              ? "bg-gradient-to-br from-green-500 via-green-600 to-green-700 text-white shadow-green-300/50"
+              : "bg-white text-green-700 border-2 border-green-200 hover:border-green-400 hover:bg-green-50"
+          }`}
+          onClick={() => handleTabChange("dns")}
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-lg">🔍</span>
+            DNS Tool
+          </span>
+          {activeTab === "dns" && (
+            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-16 h-1 bg-white rounded-full"></div>
+          )}
+        </button>
+
+        {/* Remote Connectivity */}
+        <button
+          className={`group relative px-6 py-3 rounded-2xl font-semibold shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-violet-300 focus:ring-offset-2 ${
+            activeTab === "connectivity"
+              ? "bg-gradient-to-br from-violet-500 via-violet-600 to-violet-700 text-white shadow-violet-300/50"
+              : "bg-white text-violet-700 border-2 border-violet-200 hover:border-violet-400 hover:bg-violet-50"
+          }`}
+          onClick={() => handleTabChange("connectivity")}
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-lg">🔌</span>
+            Remote Connectivity
+          </span>
+          {activeTab === "connectivity" && (
+            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-16 h-1 bg-white rounded-full"></div>
+          )}
+        </button>
+      </div>
+
+      {/* Shared form */}
+      <form className="space-y-4" onSubmit={(e) => e.preventDefault()}>
+        <div className="mb-2">
+          <label className="block font-semibold mb-1">App IDs</label>
+          <AppIDMultiSelect options={appIdOptions} value={selectedAppIDs} onChange={setSelectedAppIDs} className="w-full" />
+        </div>
+
+        <div className="mb-4">
+          <label className="block font-semibold mb-1">Servers (per AppID)</label>
+          {serverOptions.length === 0 && <div className="text-gray-400 italic">Select AppIDs to see servers</div>}
+          {serverOptions.map((opt) => (
+            <div key={opt.appId} className="mb-4">
+              <div className="font-bold text-blue-700 text-sm mb-1">
+                {opt.appId} <span className="text-gray-500">{inventory[opt.appId]?.appName}</span>
+              </div>
+              <ServerMultiSelect
+                options={opt.servers}
+                value={selectedServers[opt.appId] || []}
+                onChange={(vals) => setSelectedServers((prev) => ({ ...prev, [opt.appId]: vals }))}
+                className="w-full"
+              />
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block font-semibold mb-1">Username</label>
+            <input className="w-full border rounded px-3 py-2" value={username} onChange={(e) => setUsername(e.target.value)} />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">Password</label>
+            <input type="password" className="w-full border rounded px-3 py-2" value={password} onChange={(e) => setPassword(e.target.value)} />
+          </div>
+        </div>
+
+        {/* Registry-only controls (restored) */}
+        {activeTab === "registry" && (
+          <div className="bg-white p-4 rounded-xl shadow mb-4 w-full">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+              <div>
+                <label className="block font-semibold mb-1">Registry Root</label>
+                <select className="border rounded px-3 py-2 w-full" value={registryRoot} onChange={(e) => setRegistryRoot(e.target.value)}>
+                  <option value="HKLM">HKLM</option>
+                  <option value="HKCU">HKCU</option>
+                  <option value="HKCR">HKCR</option>
+                  <option value="HKU">HKU</option>
+                  <option value="HKCC">HKCC</option>
+                </select>
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Subkey Path</label>
+                <input
+                  type="text"
+                  className="border rounded px-3 py-2 w-full"
+                  value={registrySubkey}
+                  onChange={(e) => setRegistrySubkey(e.target.value)}
+                  placeholder="SOFTWARE\Microsoft\.NETFramework"
+                />
+              </div>
+              <div className="flex items-center md:justify-start justify-center">
+                <button
+                  type="button"
+                  className={`group relative px-8 py-4 rounded-2xl font-bold shadow-xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-yellow-300 focus:ring-offset-2 overflow-hidden ${
+                    loadingRegistry 
+                      ? "bg-gray-400 cursor-not-allowed" 
+                      : "bg-gradient-to-br from-yellow-500 via-yellow-600 to-yellow-700 hover:from-yellow-600 hover:via-yellow-700 hover:to-yellow-800 text-white shadow-yellow-300/50"
+                  }`}
+                  onClick={() => {
+                    if (!validateSelection()) return;
+                    // Build a normalized registry path
+                    const sub = (registrySubkey || "").replace(/^\\+|\\+$/g, "");
+                    const pathTrimmed = sub ? `${registryRoot}\\${sub}` : registryRoot;
+                    setRegistryPath(pathTrimmed);
+                    fetchRegistryInfo(pathTrimmed);
+                  }}
+                  disabled={loadingRegistry}
+                >
+                  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000"></div>
+                  <span className="relative flex items-center gap-3">
+                    {loadingRegistry ? (
+                      <>
+                        <span className="animate-spin text-xl">⏳</span>
+                        Loading Registry...
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-xl">🔍</span>
+                        Get Registry Info
+                      </>
+                    )}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Servicepacks primary action */}
+        {activeTab === "servicepacks" && (
+          <>
+            <div className="mb-4 flex justify-center mt-6">
+              <button
+                type="button"
+                className={`group relative px-8 py-4 rounded-2xl font-bold shadow-xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-indigo-300 focus:ring-offset-2 overflow-hidden ${
+                  loading 
+                    ? "bg-gray-400 cursor-not-allowed" 
+                    : "bg-gradient-to-br from-indigo-500 via-indigo-600 to-indigo-700 hover:from-indigo-600 hover:via-indigo-700 hover:to-indigo-800 text-white shadow-indigo-300/50"
+                }`}
+                onClick={fetchServicePacks}
+                disabled={loading}
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000"></div>
+                <span className="relative flex items-center gap-3">
+                  {loading ? (
+                    <>
+                      <span className="animate-spin text-xl">⏳</span>
+                      Loading Service Packs...
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-xl">📦</span>
+                      Get Service Packs / Software
+                    </>
+                  )}
+                </span>
+              </button>
+            </div>
+          </>
+        )}
+        {activeTab === "servicepacks" && (servicePacks.length > 0 || installedSoftware.length > 0 || serverErrors.length > 0) && (
+          <ServicePacksInfoTable
+            servicePacks={servicePacks}
+            installedSoftware={installedSoftware}
+            serverErrors={serverErrors}
+            servicePacksView={servicePacksView}
+            setServicePacksView={setServicePacksView}
+            textQuerySP={textQuerySP}
+            setTextQuerySP={setTextQuerySP}
+            sortSPBy={sortSPBy}
+            setSortSPBy={setSortSPBy}
+            sortSPDir={sortSPDir}
+            setSortSPDir={setSortSPDir}
+            loading={loading}
+            onError={showAlert}
+            onRetryErrors={(errors) => {
+              const operation = servicePacksView === "hotfixes" ? "service_packs" : "installed_software";
+              const currentData = servicePacksView === "hotfixes" ? servicePacks : installedSoftware;
+              const setData = servicePacksView === "hotfixes" ? setServicePacks : setInstalledSoftware;
+              retryFailedServers(operation, errors, currentData, setData, setServerErrors);
+            }}
+          />
+        )}
+
+  {/* No inline error display, all errors use modal Alert */}
+      </form>
+
+      {/* Registry results */}
+      {activeTab === "registry" && registryInfo.length > 0 && (
+        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 mb-8 overflow-x-auto">
+          <div className="mb-4">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 bg-gradient-to-r from-red-500 to-red-600 rounded-xl shadow-lg">
+                <span className="text-white text-xl">📋</span>
+              </div>
+              <div>
+                <h3 className="text-lg font-bold bg-gradient-to-r from-red-700 to-red-900 bg-clip-text text-transparent">
+                  Registry Information
+                </h3>
+                <p className="text-gray-600 text-xs">
+                  {registryInfo.length} server{registryInfo.length !== 1 ? 's' : ''} • Registry path results
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Search + Export */}
+          <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mb-6">
+            <div className="relative flex-1 max-w-md">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <span className="text-gray-400">🔍</span>
+              </div>
+              <input
+                type="text"
+                value={textQueryReg}
+                onChange={(e) => setTextQueryReg(e.target.value)}
+                placeholder="Search registry values, keys, servers, or any field..."
+                className="w-full border-2 border-gray-200 rounded-xl pl-10 pr-4 py-2 text-sm focus:border-red-500 focus:ring-2 focus:ring-red-100 transition-all duration-200 bg-white shadow-sm"
+              />
+              {textQueryReg && (
+                <button
+                  onClick={() => setTextQueryReg("")}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                >
+                  <span>✖️</span>
+                </button>
+              )}
+            </div>
+            
+            <button
+              type="button"
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-green-500 to-green-600 text-white font-semibold shadow-lg hover:shadow-xl hover:from-green-600 hover:to-green-700 transition-all duration-200 transform hover:scale-105 text-sm flex items-center gap-2"
+              onClick={() => {
+                const rows = [];
+                (registryInfo || []).forEach((r) => {
+                  const appId = r.AppID || r._appId || "";
+                  const server = r.Server || r._server || "";
+
+                  let path = "";
+                  let values = [];
+                  if (r.RawOutput) {
+                    const lines = r.RawOutput.split("\n");
+                    path = (lines[0] || "").replace("Registry Path: ", "").trim();
+                    for (let i = 2; i < lines.length; i++) {
+                      const line = lines[i];
+                      if (!line || line.startsWith("---")) continue;
+                      const parts = line.split("\t");
+                      if (parts.length >= 3) {
+                        values.push({
+                          name: parts[0] || "(Default)",
+                          type: parts[1],
+                          value: parts.slice(2).join(" "),
+                        });
+                      }
+                    }
+                  }
+                  values.forEach((v) => {
+                    const row = { 
+                      AppID: appId, 
+                      Server: server, 
+                      KeyPath: path, 
+                      Name: v.name, 
+                      Type: v.type, 
+                      Value: v.value 
+                    };
+                    // apply text filter
+                    if (textQueryReg) {
+                      const q = textQueryReg.toLowerCase();
+                      const searchableText = [
+                        appId, server, path, v.name, v.type, v.value
+                      ].join(' ').toLowerCase();
+                      if (!searchableText.includes(q)) return;
+                    }
+                    rows.push(row);
+                  });
+                });
+                if (rows.length > 0) exportToExcel(rows, "registry_values");
+              }}
+              disabled={registryInfo.length === 0}
+            >
+              <span>📊</span>
+              Export to Excel
+            </button>
+          </div>
+
+          {registryInfo
+            .filter((r) => {
+              // apply text filter
+              if (textQueryReg) {
+                const q = textQueryReg.toLowerCase();
+                const raw = String(r.RawOutput || "").toLowerCase();
+                const appId = String(r.AppID || r._appId || "").toLowerCase();
+                const server = String(r.Server || r._server || "").toLowerCase();
+                
+                // Also check individual registry values for better search
+                let valuesMatch = false;
+                if (r.RawOutput) {
+                  const lines = r.RawOutput.split("\n");
+                  for (let i = 2; i < lines.length; i++) {
+                    const line = lines[i];
+                    if (line && !line.startsWith("---") && line.toLowerCase().includes(q)) {
+                      valuesMatch = true;
+                      break;
+                    }
+                  }
+                }
+                
+                return raw.includes(q) || appId.includes(q) || server.includes(q) || valuesMatch;
+              }
+              return true;
+            })
+            .map((r, idx) => {
+              let values = [];
+              let subkeys = [];
+              let path = "";
+              if (r.RawOutput) {
+                const lines = r.RawOutput.split("\n");
+                path = lines[0]?.replace("Registry Path: ", "").trim();
+                let subkeySection = false;
+                for (let i = 2; i < lines.length; i++) {
+                  const line = lines[i];
+                  if (!line) continue;
+                  if (line.startsWith("--- Subkeys (folders) ---")) {
+                    subkeySection = true;
+                    continue;
+                  }
+                  if (subkeySection) {
+                    subkeys.push(line.trim());
+                  } else if (!line.startsWith("-")) {
+                    const parts = line.split("\t");
+                    if (parts.length >= 3) {
+                      values.push({
+                        name: parts[0] || "(Default)",
+                        type: parts[1],
+                        value: parts.slice(2).join(" "),
+                      });
+                    }
+                  }
+                }
+              }
+              const appId = r.AppID || r._appId || "N/A";
+              const server = r.Server || r._server || "N/A";
+              const showTable = !!path;
+
+              return (
+                <div key={idx} className="mb-8">
+                  <div className="font-bold text-blue-700 text-lg mb-1">AppID: {appId} | Server: {server}</div>
+                  <div className="text-sm text-gray-700 mb-2">
+                    Registry Path: <span className="font-mono">{path || "N/A"}</span>
+                  </div>
+
+                  {showTable && (
+                    <div className="overflow-x-auto mb-4">
+                      <table className="min-w-[400px] w-full border border-gray-300 rounded-xl">
+                        <thead className="bg-blue-50">
+                          <tr>
+                            <th className="px-3 py-2 text-left font-semibold text-blue-800">Name</th>
+                            <th className="px-3 py-2 text-left font-semibold text-blue-800">Type</th>
+                            <th className="px-3 py-2 text-left font-semibold text-blue-800">Value</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {values.length > 0 ? (
+                            values.map((v, i) => (
+                              <tr key={i} className="border-b">
+                                <td className="px-3 py-2 font-mono text-xs">{v.name}</td>
+                                <td className="px-3 py-2 font-mono text-xs">{v.type}</td>
+                                <td className="px-3 py-2 font-mono text-xs break-all">{v.value}</td>
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td colSpan={3} className="px-3 py-2 text-gray-400 italic">
+                                No values found.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {subkeys.length > 0 && (
+                    <div className="bg-blue-50 p-3 rounded mb-2">
+                      <strong>Subkeys (folders):</strong>
+                      <ul className="list-disc ml-6 mt-1">
+                        {subkeys.map((sk, i) => (
+                          <li key={i} className="font-mono text-xs">
+                            {sk}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+        </div>
+      )}
+
+      {/* Content Verification */}
+      {activeTab === "content" && (
+        <div className="bg-gradient-to-br from-white to-gray-50 p-6 rounded-2xl shadow-2xl mb-6 border border-gray-100">
+          <div className="mb-6">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="p-2 bg-gradient-to-r from-teal-500 to-teal-600 rounded-xl shadow-lg">
+                <span className="text-white text-xl">📁</span>
+              </div>
+              <div>
+                <h2 className="text-xl font-bold bg-gradient-to-r from-teal-700 to-teal-900 bg-clip-text text-transparent">
+                  Content Verification
+                </h2>
+                <p className="text-gray-600 text-xs">
+                  Monitor file and folder changes across servers
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 mb-6">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+              <div className="lg:col-span-1">
+                <label className="block font-semibold mb-2 text-gray-700">📂 Folder Path</label>
+                <input
+                  type="text"
+                  className={`w-full border-2 rounded-xl px-4 py-3 text-sm transition-all duration-200 ${
+                    folderPathError 
+                      ? "border-red-500 bg-red-50 focus:border-red-600 focus:ring-2 focus:ring-red-100" 
+                      : "border-gray-200 focus:border-teal-500 focus:ring-2 focus:ring-teal-100 bg-white"
+                  }`}
+                  value={folderPath}
+                  onChange={(e) => handleFolderPathChange(e.target.value)}
+                  placeholder="C:\\inetpub\\wwwroot"
+                />
+                {folderPathError && (
+                  <p className="text-red-500 text-sm mt-2 flex items-center gap-1">
+                    <span>⚠️</span>
+                    {folderPathError}
+                  </p>
+                )}
+                <p className="text-gray-500 text-xs mt-2">
+                  Enter a valid Windows folder path. Wildcards (* ? [ ]) are not allowed.
+                </p>
+              </div>
+
+              <div className="lg:col-span-1">
+                <label className="block font-semibold text-gray-700 mb-2">📅 Modified After (Optional)</label>
+                <input 
+                  type="datetime-local" 
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-teal-500 focus:border-transparent bg-gray-50 focus:bg-white transition-all duration-200" 
+                  value={modifiedAfter} 
+                  onChange={(e) => setModifiedAfter(e.target.value)} 
+                  max={modifiedBefore || new Date().toISOString().slice(0, 16)}
+                />
+                <p className="text-xs text-gray-500 mt-1">Leave empty to include all files regardless of modification date</p>
+              </div>
+
+              <div className="lg:col-span-1">
+                <label className="block font-semibold text-gray-700 mb-2">📅 Modified Before (Optional)</label>
+                <input 
+                  type="datetime-local" 
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-teal-500 focus:border-transparent bg-gray-50 focus:bg-white transition-all duration-200" 
+                  value={modifiedBefore} 
+                  onChange={(e) => setModifiedBefore(e.target.value)} 
+                  min={modifiedAfter}
+                  max={new Date().toISOString().slice(0, 16)}
+                />
+                <p className="text-xs text-gray-500 mt-1">Leave empty to use current time as end date</p>
+              </div>
+            </div>
+
+            {/* Quick Date Presets */}
+            <div className="mb-6">
+              <label className="block font-semibold text-gray-700 mb-3">Quick Date Presets</label>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: "Last Hour", hours: 1 },
+                  { label: "Last 24 Hours", hours: 24 },
+                  { label: "Last Week", hours: 168 }
+                ].map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    className="px-4 py-3 text-sm rounded-xl bg-gradient-to-r from-teal-100 to-teal-200 text-teal-800 font-semibold hover:from-teal-200 hover:to-teal-300 transition-all duration-200 border border-teal-300 shadow-md hover:shadow-lg transform hover:scale-105"
+                    onClick={() => {
+                      const now = new Date();
+                      const startTime = new Date(now.getTime() - (preset.hours * 60 * 60 * 1000));
+                      setModifiedAfter(startTime.toISOString().slice(0, 16));
+                      setModifiedBefore(now.toISOString().slice(0, 16));
+                    }}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="px-4 py-3 text-sm rounded-xl bg-gradient-to-r from-gray-100 to-gray-200 text-gray-800 font-semibold hover:from-gray-200 hover:to-gray-300 transition-all duration-200 border border-gray-300 shadow-md hover:shadow-lg transform hover:scale-105"
+                  onClick={() => {
+                    setModifiedAfter("");
+                    setModifiedBefore("");
+                  }}
+                >
+                  Clear Dates
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-4 items-center mb-6">
+              <label className="inline-flex items-center gap-2 bg-gray-50 px-3 py-2 rounded-lg">
+                <input 
+                  type="checkbox" 
+                  className="w-4 h-4 text-teal-600 border-gray-300 rounded focus:ring-teal-500" 
+                  checked={recurse} 
+                  onChange={(e) => setRecurse(e.target.checked)} 
+                />
+                <span className="text-sm font-medium text-gray-700">🔄 Recurse Subdirectories</span>
+              </label>
+              
+              <div className="flex items-center gap-2 bg-gray-50 px-3 py-2 rounded-lg">
+                <label className="text-sm font-medium text-gray-700">📊 Max Items:</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="5000"
+                  className="border border-gray-300 rounded-lg px-3 py-1 w-20 text-sm focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
+                  value={maxItems}
+                  onChange={(e) => setMaxItems(parseInt(e.target.value || "0") || 500)}
+                />
+              </div>
+
+            </div>
+
+            <div className="flex gap-4 justify-center">
+              <button
+                type="button"
+                className={`group relative px-8 py-4 rounded-2xl font-bold shadow-xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-teal-300 focus:ring-offset-2 overflow-hidden ${
+                  loadingModified || folderPathError 
+                    ? "bg-gray-400 cursor-not-allowed text-white" 
+                    : "bg-gradient-to-br from-teal-500 via-teal-600 to-teal-700 hover:from-teal-600 hover:via-teal-700 hover:to-teal-800 text-white shadow-teal-300/50"
+                }`}
+                onClick={fetchModifiedItems}
+                disabled={loadingModified || !!folderPathError}
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000"></div>
+                <span className="relative flex items-center gap-3">
+                  {loadingModified ? (
+                    <>
+                      <span className="animate-spin text-xl">⏳</span>
+                      Loading Deployment...
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-xl">🔍</span>
+                      Get Deployment Status
+                    </>
+                  )}
+                </span>
+              </button>
+              
+              <button
+                type="button"
+                className={`group relative px-8 py-4 rounded-2xl font-bold shadow-xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-emerald-300 focus:ring-offset-2 overflow-hidden ${
+                  loadingWeb || folderPathError 
+                    ? "bg-gray-400 cursor-not-allowed text-white" 
+                    : "bg-gradient-to-br from-emerald-500 via-emerald-600 to-emerald-700 hover:from-emerald-600 hover:via-emerald-700 hover:to-emerald-800 text-white shadow-emerald-300/50"
+                }`}
+                onClick={fetchWebConfig}
+                disabled={loadingWeb || !!folderPathError}
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000"></div>
+                <span className="relative flex items-center gap-3">
+                  {loadingWeb ? (
+                    <>
+                      <span className="animate-spin text-xl">⏳</span>
+                      Loading Web.config...
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-xl">⚙️</span>
+                      Get Web.config
+                    </>
+                  )}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {contentError && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4 flex items-center gap-3">
+              <span className="text-red-500 text-xl">❌</span>
+              <div className="text-red-700 font-medium">{contentError}</div>
+            </div>
+          )}
+          
+          {renderWebConfigStatusTable()}
+
+          {modifiedItems.length > 0 && (
+            <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+              <div className="mb-4">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="p-2 bg-gradient-to-r from-teal-500 to-teal-600 rounded-xl shadow-lg">
+                    <span className="text-white text-xl">📋</span>
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold bg-gradient-to-r from-teal-700 to-teal-900 bg-clip-text text-transparent">
+                      Deployment Status Results
+                    </h3>
+                    <p className="text-gray-600 text-xs">
+                      {modifiedItems.length} server{modifiedItems.length !== 1 ? 's' : ''} • 
+                      {modifiedItems.reduce((total, item) => total + (item.Items?.length || 0), 0)} file{modifiedItems.reduce((total, item) => total + (item.Items?.length || 0), 0) !== 1 ? 's' : ''} found
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mb-6">
+                <div className="relative flex-1 max-w-md">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <span className="text-gray-400">🔍</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={textQueryContent}
+                    onChange={(e) => setTextQueryContent(e.target.value)}
+                    placeholder="Search files, apps, servers, or any field..."
+                    className="w-full border-2 border-gray-200 rounded-xl pl-10 pr-4 py-2 text-sm focus:border-teal-500 focus:ring-2 focus:ring-teal-100 transition-all duration-200 bg-white shadow-sm"
+                  />
+                  {textQueryContent && (
+                    <button
+                      onClick={() => setTextQueryContent("")}
+                      className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                    >
+                      <span>✖️</span>
+                    </button>
+                  )}
+                </div>
+                
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-green-500 to-green-600 text-white font-semibold shadow-lg hover:shadow-xl hover:from-green-600 hover:to-green-700 transition-all duration-200 transform hover:scale-105 text-sm flex items-center gap-2"
+                  onClick={() => {
+                    const rows = [];
+                    modifiedItems.forEach((r) => {
+                      if (r.Items && r.Items.length > 0) {
+                        r.Items.forEach((it) => {
+                          const searchText = textQueryContent.toLowerCase();
+                          if (!searchText || 
+                              r._appId.toLowerCase().includes(searchText) ||
+                              r._server.toLowerCase().includes(searchText) ||
+                              it.Name.toLowerCase().includes(searchText) ||
+                              it.Type.toLowerCase().includes(searchText) ||
+                              it.FullName.toLowerCase().includes(searchText) ||
+                              it.LastWriteTime.toLowerCase().includes(searchText)) {
+                            rows.push({
+                              AppID: r._appId,
+                              Server: r._server,
+                              Type: it.Type,
+                              Name: it.Name,
+                              LastModified: it.LastWriteTime,
+                              FullPath: it.FullName,
+                            });
+                          }
+                        });
+                      }
+                    });
+                    if (rows.length > 0) exportToExcel(rows, "modified_files_folders");
+                  }}
+                  disabled={modifiedItems.length === 0}
+                >
+                  <span>📊</span>
+                  Export to Excel
+                </button>
+              </div>
+
+              <div className="space-y-6">
+                {modifiedItems
+                  .filter((r) => {
+                    if (!textQueryContent) return true;
+                    const searchText = textQueryContent.toLowerCase();
+                    return r._appId.toLowerCase().includes(searchText) ||
+                           r._server.toLowerCase().includes(searchText) ||
+                           (r.Items || []).some(it => 
+                             it.Name.toLowerCase().includes(searchText) ||
+                             it.Type.toLowerCase().includes(searchText) ||
+                             it.FullName.toLowerCase().includes(searchText) ||
+                             it.LastWriteTime.toLowerCase().includes(searchText)
+                           );
+                  })
+                  .map((r, idx) => (
+                    <div key={idx} className="bg-gradient-to-r from-gray-50 to-white rounded-xl border border-gray-200 overflow-hidden shadow-md hover:shadow-lg transition-all duration-300">
+                      <div className="px-6 py-4 bg-gradient-to-r from-teal-50 to-blue-50 border-b border-gray-200">
+                        <div className="flex items-center gap-3">
+                          <div className="p-1.5 bg-teal-100 rounded-lg">
+                            <span className="text-teal-600 font-semibold text-xs">📱</span>
+                          </div>
+                          <div>
+                            <div className="font-bold text-teal-800 text-base">AppID: {r._appId}</div>
+                            <div className="text-teal-600 text-xs">Server: {r._server}</div>
+                            {r.Items?.length > 0 && (
+                              <div className="text-gray-500 text-xs mt-1">
+                                {r.Items.length} item{r.Items.length !== 1 ? 's' : ''} found
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {!r.Exists && (
+                        <div className="px-6 py-3 text-center">
+                          <div className="text-gray-500 text-sm">📂 Path not found on this server</div>
+                        </div>
+                      )}
+                      
+                      {r.Items?.length ? (
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full text-sm">
+                            <thead>
+                              <tr className="bg-gradient-to-r from-gray-50 to-gray-100">
+                                <th className="text-center px-4 py-3 font-semibold text-gray-700 border-b border-gray-200 text-xs">
+                                  Type
+                                </th>
+                                <th className="text-left px-4 py-3 font-semibold text-gray-700 border-b border-gray-200 text-xs">
+                                  Name
+                                </th>
+                                <th className="text-left px-4 py-3 font-semibold text-gray-700 border-b border-gray-200 text-xs">
+                                  Last Modified
+                                </th>
+                                <th className="text-left px-4 py-3 font-semibold text-gray-700 border-b border-gray-200 text-xs">
+                                  Full Path
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100">
+                              {r.Items
+                                .filter((it) => {
+                                  if (!textQueryContent) return true;
+                                  const searchText = textQueryContent.toLowerCase();
+                                  return it.Name.toLowerCase().includes(searchText) ||
+                                         it.Type.toLowerCase().includes(searchText) ||
+                                         it.FullName.toLowerCase().includes(searchText) ||
+                                         it.LastWriteTime.toLowerCase().includes(searchText);
+                                })
+                                .map((it, i) => (
+                                  <tr key={i} className="hover:bg-teal-50 transition-colors duration-150">
+                                    <td className="px-4 py-3 text-center">
+                                      <span className="text-lg">
+                                        {it.Type === 'Folder' ? '📂' : '📄'}
+                                      </span>
+                                    </td>
+                                    <td className="px-4 py-3 font-medium text-gray-900">
+                                      <span className="font-medium text-gray-900">
+                                        {it.Name}
+                                      </span>
+                                    </td>
+                                    <td className="px-4 py-3 text-gray-700 font-mono text-xs">
+                                      <span className="font-semibold">{it.LastWriteTime}</span>
+                                    </td>
+                                    <td className="px-4 py-3 text-gray-700 text-xs break-all">
+                                      <span className="font-mono font-medium">{it.FullName}</span>
+                                    </td>
+                                  </tr>
+                                ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : r.Exists !== false && (
+                        <div className="px-6 py-3 text-center">
+                          <div className="text-gray-500 text-sm">🔍 No items found matching the current filters</div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* GAC */}
+      {activeTab === "gac" && (
+        <GACResults
+          gacAssemblies={gacAssemblies}
+          textQueryGac={textQueryGac}
+          setTextQueryGac={setTextQueryGac}
+          fetchGAC={fetchGAC}
+          loadingGAC={loadingGAC}
+        />
+      )}
+
+      {/* COM */}
+      {activeTab === "com" && (
+        <COMResults
+          comObjects={comObjects}
+          textQueryCom={textQueryCom}
+          setTextQueryCom={setTextQueryCom}
+          fetchCOM={fetchCOM}
+          loadingCOM={loadingCOM}
+        />
+      )}
+
+      {/* IIS tab */}
+      {activeTab === "iis" && (
+        <>
+          <div className="flex gap-4 mb-6 justify-center mt-6">
+            <button
+              type="button"
+              className={`group relative px-8 py-4 rounded-2xl font-bold shadow-xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-300 focus:ring-offset-2 overflow-hidden ${
+                loading && iisView === "websites"
+                  ? "bg-gray-400 cursor-not-allowed text-white"
+                  : iisView === "websites" 
+                    ? "bg-gradient-to-br from-blue-600 via-blue-700 to-blue-800 text-white shadow-blue-400/50" 
+                    : "bg-gradient-to-br from-blue-500 via-blue-600 to-blue-700 hover:from-blue-600 hover:via-blue-700 hover:to-blue-800 text-white shadow-blue-300/50"
+              }`}
+              onClick={async () => {
+                setIISView("websites");
+                await fetchIISWebsites();
+              }}
+              disabled={loading}
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000"></div>
+              <span className="relative flex items-center gap-3">
+                {loading && iisView === "websites" ? (
+                  <>
+                    <span className="animate-spin text-xl">⏳</span>
+                    Loading Websites...
+                  </>
+                ) : (
+                  <>
+                    <span className="text-xl">🌐</span>
+                    Get Websites Info
+                  </>
+                )}
+              </span>
+            </button>
+            <button
+              type="button"
+              className={`group relative px-8 py-4 rounded-2xl font-bold shadow-xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-cyan-300 focus:ring-offset-2 overflow-hidden ${
+                loading && iisView === "apppools"
+                  ? "bg-gray-400 cursor-not-allowed text-white"
+                  : iisView === "apppools" 
+                    ? "bg-gradient-to-br from-cyan-600 via-cyan-700 to-cyan-800 text-white shadow-cyan-400/50" 
+                    : "bg-gradient-to-br from-cyan-500 via-cyan-600 to-cyan-700 hover:from-cyan-600 hover:via-cyan-700 hover:to-cyan-800 text-white shadow-cyan-300/50"
+              }`}
+              onClick={async () => {
+                setIISView("apppools");
+                await fetchIISAppPools();
+              }}
+              disabled={loading}
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000"></div>
+              <span className="relative flex items-center gap-3">
+                {loading && iisView === "apppools" ? (
+                  <>
+                    <span className="animate-spin text-xl">⏳</span>
+                    Loading App Pools...
+                  </>
+                ) : (
+                  <>
+                    <span className="text-xl">🔧</span>
+                    Get App Pools Info
+                  </>
+                )}
+              </span>
+            </button>
+          </div>
+
+          {iisView === "websites" && iisWebsites.length > 0 && (
+            <IISInfoTable
+              data={iisWebsites}
+              type="websites"
+              serverErrors={serverErrors}
+              onError={showAlert}
+              onRetryErrors={(errors) => retryFailedServers('iis_websites', errors, iisWebsites, setIISWebsites, setServerErrors)}
+            />
+          )}
+          {iisView === "apppools" && iisAppPools.length > 0 && (
+            <IISInfoTable
+              data={iisAppPools}
+              type="apppools"
+              serverErrors={serverErrors}
+              onError={showAlert}
+              onRetryErrors={(errors) => retryFailedServers('iis_apppools', errors, iisAppPools, setIISAppPools, setServerErrors)}
+            />
+          )}
+        </>
+      )}
+
+      {/* Services */}
+      {activeTab === "services" && (
+        <>
+          <div className="mb-6 flex justify-center mt-6">
+            <button
+              type="button"
+              className={`group relative px-8 py-4 rounded-2xl font-bold shadow-xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-purple-300 focus:ring-offset-2 overflow-hidden ${
+                loading 
+                  ? "bg-gray-400 cursor-not-allowed text-white" 
+                  : "bg-gradient-to-br from-purple-500 via-purple-600 to-purple-700 hover:from-purple-600 hover:via-purple-700 hover:to-purple-800 text-white shadow-purple-300/50"
+              }`}
+              onClick={fetchServices}
+              disabled={loading}
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000"></div>
+              <span className="relative flex items-center gap-3">
+                {loading ? (
+                  <>
+                    <span className="animate-spin text-xl">⏳</span>
+                    Loading Services...
+                  </>
+                ) : (
+                  <>
+                    <span className="text-xl">⚙️</span>
+                    Get Services Info
+                  </>
+                )}
+              </span>
+            </button>
+          </div>
+        </>
+      )}
+      {activeTab === "services" && (services.length > 0 || serverErrors.length > 0) && (
+        <ServicesInfoTable 
+          data={services} 
+          serverErrors={serverErrors} 
+          showNoResults={false}
+          onRetryErrors={(errors) => retryFailedServers('services', errors, services, setServices, setServerErrors)}
+        />
+      )}
+
+      {/* Certificates */}
+      {activeTab === "certificates" && (
+        <>
+          <div className="mb-6 flex justify-center mt-6">
+            <button
+              type="button"
+              className={`group relative px-8 py-4 rounded-2xl font-bold shadow-xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-red-300 focus:ring-offset-2 overflow-hidden ${
+                loadingCertificates 
+                  ? "bg-gray-400 cursor-not-allowed text-white" 
+                  : "bg-gradient-to-br from-red-500 via-red-600 to-red-700 hover:from-red-600 hover:via-red-700 hover:to-red-800 text-white shadow-red-300/50"
+              }`}
+              onClick={fetchCertificates}
+              disabled={loadingCertificates}
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000"></div>
+              <span className="relative flex items-center gap-3">
+                {loadingCertificates ? (
+                  <>
+                    <span className="animate-spin text-xl">⏳</span>
+                    Loading Certificates...
+                  </>
+                ) : (
+                  <>
+                    <span className="text-xl">🔒</span>
+                    Get Certificates Info
+                  </>
+                )}
+              </span>
+            </button>
+          </div>
+        </>
+      )}
+      {activeTab === "certificates" && certificates.length > 0 && (
+        <CertificatesInfoTable 
+          data={certificates} 
+          serverErrors={serverErrors}
+          onRetryErrors={(errors) => retryFailedServers('certificates', errors, certificates, setCertificates, setServerErrors)}
+        />
+      )}
+
+      {/* Event Logs */}
+      {activeTab === "eventlogs" && showEventControls && (
+        <div className="mb-8">
+          <div className="bg-white p-6 rounded-xl shadow-xl mb-4">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="p-3 bg-gradient-to-r from-purple-500 to-purple-600 rounded-xl shadow-lg">
+                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-xl font-bold bg-gradient-to-r from-purple-700 to-purple-900 bg-clip-text text-transparent">
+                  Event Logs Configuration
+                </h2>
+                <p className="text-gray-600 text-sm">Configure search parameters for Windows Event Logs</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              <div>
+                <label className="block font-semibold text-gray-700 mb-2">Event Channel</label>
+                <select 
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent bg-gray-50 focus:bg-white transition-all duration-200" 
+                  value={eventChannel} 
+                  onChange={(e) => setEventChannel(e.target.value)}
+                >
+                  <option value="Application">Application</option>
+                  <option value="System">System</option>
+                  <option value="Security">Security</option>
+                </select>
+              </div>
+              <div>
+                <label className="block font-semibold text-gray-700 mb-2">Last N Hours</label>
+                <input 
+                  type="number" 
+                  min="1" 
+                  max="168"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent bg-gray-50 focus:bg-white transition-all duration-200" 
+                  value={eventHours} 
+                  onChange={(e) => setEventHours(parseInt(e.target.value || "0") || 24)} 
+                  placeholder="24"
+                />
+              </div>
+              <div>
+                <label className="block font-semibold text-gray-700 mb-2">Max Events</label>
+                <input 
+                  type="number" 
+                  min="1" 
+                  max="10000"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent bg-gray-50 focus:bg-white transition-all duration-200" 
+                  value={eventMax} 
+                  onChange={(e) => setEventMax(parseInt(e.target.value || "0") || 200)} 
+                  placeholder="200"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block font-semibold text-gray-700 mb-2">Start Date & Time (Optional)</label>
+                <input 
+                  type="datetime-local" 
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent bg-gray-50 focus:bg-white transition-all duration-200" 
+                  value={eventStart} 
+                  onChange={(e) => setEventStart(e.target.value)} 
+                />
+                <p className="text-xs text-gray-500 mt-1">Leave empty to use 'Last N Hours' setting</p>
+              </div>
+              <div>
+                <label className="block font-semibold text-gray-700 mb-2">End Date & Time (Optional)</label>
+                <input 
+                  type="datetime-local" 
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent bg-gray-50 focus:bg-white transition-all duration-200" 
+                  value={eventEnd} 
+                  onChange={(e) => setEventEnd(e.target.value)} 
+                />
+                <p className="text-xs text-gray-500 mt-1">Leave empty to use current time</p>
+              </div>
+            </div>
+
+            <div className="mb-6">
+              <label className="block font-semibold text-gray-700 mb-3">Quick Date Presets</label>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: "Last Hour", hours: 1 },
+                  { label: "Last 24 Hours", hours: 24 },
+                  { label: "Last Week", hours: 168 }
+                ].map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    className="px-4 py-3 text-sm rounded-xl bg-gradient-to-r from-purple-100 to-purple-200 text-purple-800 font-semibold hover:from-purple-200 hover:to-purple-300 transition-all duration-200 border border-purple-300 shadow-md hover:shadow-lg transform hover:scale-105"
+                    onClick={() => {
+                      setEventHours(preset.hours);
+                      setEventStart('');
+                      setEventEnd('');
+                    }}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="px-4 py-3 text-sm rounded-xl bg-gradient-to-r from-gray-100 to-gray-200 text-gray-800 font-semibold hover:from-gray-200 hover:to-gray-300 transition-all duration-200 border border-gray-300 shadow-md hover:shadow-lg transform hover:scale-105"
+                  onClick={() => {
+                    setEventHours(24);
+                    setEventStart('');
+                    setEventEnd('');
+                  }}
+                >
+                  Clear Dates
+                </button>
+              </div>
+            </div>
+
+            <div className="flex gap-4 justify-center">
+              <button
+                type="button"
+                className={`group relative px-8 py-4 rounded-2xl font-bold shadow-xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-orange-300 focus:ring-offset-2 overflow-hidden ${
+                  loadingEventLogs 
+                    ? "bg-gray-400 cursor-not-allowed text-white" 
+                    : "bg-gradient-to-br from-orange-500 via-orange-600 to-orange-700 hover:from-orange-600 hover:via-orange-700 hover:to-orange-800 text-white shadow-orange-300/50"
+                }`}
+                onClick={fetchEventLogs}
+                disabled={loadingEventLogs}
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000"></div>
+                <span className="relative flex items-center gap-3">
+                  {loadingEventLogs ? (
+                    <>
+                      <span className="animate-spin text-xl">⏳</span>
+                      Loading Event Logs...
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-xl">📊</span>
+                      Get Event Logs
+                    </>
+                  )}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="px-6 py-3 rounded-xl bg-gradient-to-r from-gray-500 to-gray-400 text-white font-semibold shadow-lg hover:from-gray-600 hover:to-gray-500 transition-all duration-200 flex items-center gap-2"
+                onClick={() => {
+                  setEventStart("");
+                  setEventEnd("");
+                  setEventHours(24);
+                  setEventMax(200);
+                  setEventChannel("Application");
+                }}
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Reset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Server Health Info */}
+      {activeTab === "os_patching" && (
+        <div className="bg-gradient-to-br from-white to-gray-50 p-6 rounded-2xl shadow-2xl mb-6 border border-gray-100">
+          <div className="flex justify-center mb-6">
+            <button
+              type="button"
+              className={`group relative px-8 py-4 rounded-2xl font-bold shadow-xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-emerald-300 focus:ring-offset-2 overflow-hidden text-lg ${
+                loadingOsPatching 
+                  ? "bg-gray-400 cursor-not-allowed text-white" 
+                  : "bg-gradient-to-br from-emerald-500 via-emerald-600 to-emerald-700 hover:from-emerald-600 hover:via-emerald-700 hover:to-emerald-800 text-white shadow-emerald-300/50"
+              }`}
+              onClick={async () => {
+                if (!validateSelection()) return;
+                setLoadingOsPatching(true);
+                setOsPatchingResults([]);
+                
+                // Prepare servers list for parallel execution
+                const servers = [];
+                for (const appId of selectedAppIDs) {
+                  for (const serverName of selectedServers[appId] || []) {
+                    servers.push({ appId, serverName, username, password });
+                  }
+                }
+                
+                if (servers.length === 0) {
+                  setLoadingOsPatching(false);
+                  return;
+                }
+                
+                setOsPatchingProgress({ current: 0, total: servers.length });
+                const startTime = performance.now();
+                
+                try {
+                  // Parallel API call for server health info
+                  const res = await api.post('/api/server/os_patching_parallel', { servers });
+                  const results = res.data.results || [];
+                  
+                  const endTime = performance.now();
+                  const duration = ((endTime - startTime) / 1000).toFixed(2);
+                  
+                  const out = [];
+                  const errors = [];
+                  
+                  results.forEach(result => {
+                    const row = result.rows && result.rows.length > 0 ? result.rows[0] : null;
+                    out.push({ 
+                      appId: result.appId, 
+                      server: result.server, 
+                      row: row, 
+                      stderr: result.stderr 
+                    });
+                    
+                    if (result.stderr) {
+                      errors.push({ 
+                        appId: result.appId, 
+                        serverName: result.server, 
+                        message: result.stderr 
+                      });
+                    }
+                  });
+                  
+                  setOsPatchingResults(out);
+                  setOsPatchingProgress({ current: servers.length, total: servers.length });
+                  
+                  // Show performance info
+                  showAlert(`✅ Server health info retrieved in ${duration}s (${servers.length} servers)`, "success");
+                  
+                  if (errors.length > 0) {
+                    setServerErrors((prev) => [...prev, ...errors]);
+                    alertForError(`${errors.length} server(s) had errors. Check details in results.`);
+                  }
+                  
+                } catch (e) {
+                  const msg = e?.response?.data?.detail || e.message || 'Failed to fetch server health info';
+                  alertForError(msg);
+                  setServerErrors((prev) => [...prev, { appId: 'N/A', serverName: 'N/A', message: msg }]);
+                }
+                
+                setLoadingOsPatching(false);
+              }}
+              disabled={loadingOsPatching}
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000"></div>
+              <span className="relative flex items-center gap-3">
+                {loadingOsPatching ? (
+                  <>
+                    <span className="animate-spin text-xl">⏳</span>
+                    Scanning {osPatchingProgress.total} servers...
+                  </>
+                ) : (
+                  <>
+                    <span className="text-xl">🏥</span>
+                    Get Server Health Info
+                  </>
+                )}
+              </span>
+            </button>
+          </div>
+
+          {/* Results Section - Only show when there are results */}
+          {osPatchingResults.length > 0 && (
+            <>
+              <div className="mb-6">
+              </div>
+              
+              <div className="bg-white p-6 rounded-xl shadow-xl border border-gray-200">
+              <div className="flex justify-between items-center mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-gradient-to-r from-emerald-500 to-emerald-600 rounded-lg shadow-lg">
+                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold bg-gradient-to-r from-emerald-700 to-emerald-900 bg-clip-text text-transparent">
+                      Server Health Results
+                    </h3>
+                    <p className="text-gray-600 text-sm">
+                      Health status for {osPatchingResults.length} servers
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="relative">
+                    <svg className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    <input
+                      type="text"
+                      value={textQueryOSPatching}
+                      onChange={(e) => setTextQueryOSPatching(e.target.value)}
+                      placeholder="Search servers, OS, service names, website names, app pool names..."
+                      className="pl-10 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent bg-gray-50 focus:bg-white transition-all duration-200 min-w-[300px]"
+                    />
+                  </div>
+                  <button
+                    className="px-6 py-3 rounded-xl bg-gradient-to-r from-green-600 to-green-500 text-white font-semibold shadow-lg hover:from-green-700 hover:to-green-600 transition-all duration-200 flex items-center gap-2"
+                    onClick={() => {
+                      const rows = osPatchingResults
+                        .filter((r) => {
+                          if (!textQueryOSPatching) return true;
+                          const searchText = textQueryOSPatching.toLowerCase();
+                          const autoStopped = Array.isArray(r.row?.AutoStoppedServices) ? r.row.AutoStoppedServices.join(', ') : (r.row?.AutoStoppedServices || '');
+                          const iisStopped = Array.isArray(r.row?.IISStoppedSites) ? r.row.IISStoppedSites.join(', ') : (r.row?.IISStoppedSites || '');
+                          const stoppedPools = Array.isArray(r.row?.StoppedAppPools) ? r.row.StoppedAppPools.join(', ') : (r.row?.StoppedAppPools || '');
+                          
+                          return r.appId.toLowerCase().includes(searchText) ||
+                                 r.server.toLowerCase().includes(searchText) ||
+                                 (r.row?.OSVersion || '').toLowerCase().includes(searchText) ||
+                                 autoStopped.toLowerCase().includes(searchText) ||
+                                 iisStopped.toLowerCase().includes(searchText) ||
+                                 stoppedPools.toLowerCase().includes(searchText);
+                        })
+                        .map((r) => ({
+                          AppID: r.appId,
+                          Server: r.server,
+                          OSVersion: r.row?.OSVersion ?? r.OSVersion ?? '',
+                          Uptime: formatUptime(r.row?.UptimeSeconds ?? r.UptimeSeconds),
+                          'Stopped Services': ((r.row && r.row.AutoStoppedServices) || r.AutoStoppedServices || []).join(', ') || 'None',
+                          'Stopped IIS Websites': ((r.row && r.row.IISStoppedSites) || r.IISStoppedSites || []).join(', ') || 'None',
+                          'Stopped App Pools': ((r.row && r.row.StoppedAppPools) || r.StoppedAppPools || []).join(', ') || 'None',
+                          Notes: (r.row?.Notes ?? r.Notes ?? r.stderr) || '',
+                        }));
+                      if (rows.length > 0) exportToExcel(rows, 'os_patching');
+                    }}
+                    type="button"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                    </svg>
+                    Export to Excel
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[800px] border border-gray-200 rounded-xl">
+                  <thead>
+                    <tr className="bg-gradient-to-r from-emerald-50 to-emerald-100 border-b border-emerald-200">
+                      <th className="px-6 py-4 text-left text-sm font-bold text-emerald-900 uppercase tracking-wider">AppID</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-emerald-900 uppercase tracking-wider">Server</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-emerald-900 uppercase tracking-wider">OS Version</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-emerald-900 uppercase tracking-wider">Uptime</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-emerald-900 uppercase tracking-wider">Services</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-emerald-900 uppercase tracking-wider">IIS Websites</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-emerald-900 uppercase tracking-wider">IIS App Pools</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-emerald-900 uppercase tracking-wider">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {osPatchingResults
+                      .filter((r) => {
+                        if (!textQueryOSPatching) return true;
+                        const searchText = textQueryOSPatching.toLowerCase();
+                        const autoStopped = Array.isArray(r.row?.AutoStoppedServices) ? r.row.AutoStoppedServices.join(', ') : (r.row?.AutoStoppedServices || '');
+                        const iisStopped = Array.isArray(r.row?.IISStoppedSites) ? r.row.IISStoppedSites.join(', ') : (r.row?.IISStoppedSites || '');
+                        const stoppedPools = Array.isArray(r.row?.StoppedAppPools) ? r.row.StoppedAppPools.join(', ') : (r.row?.StoppedAppPools || '');
+                        
+                        return r.appId.toLowerCase().includes(searchText) ||
+                               r.server.toLowerCase().includes(searchText) ||
+                               (r.row?.OSVersion || '').toLowerCase().includes(searchText) ||
+                               autoStopped.toLowerCase().includes(searchText) ||
+                               iisStopped.toLowerCase().includes(searchText) ||
+                               stoppedPools.toLowerCase().includes(searchText);
+                      })
+                      .map((r, i) => {
+                        const row = r.row || {};
+                        const autoStopped = Array.isArray(row.AutoStoppedServices) ? row.AutoStoppedServices.join(', ') : (row.AutoStoppedServices || '');
+                        const iisStopped = Array.isArray(row.IISStoppedSites) ? row.IISStoppedSites.join(', ') : (row.IISStoppedSites || '');
+                        const stoppedPools = Array.isArray(row.StoppedAppPools) ? row.StoppedAppPools.join(', ') : (row.StoppedAppPools || '');
+                        const notes = row.Notes || r.stderr || '';
+
+                        return (
+                          <tr key={`${r.appId}-${r.server}-${i}`} className="hover:bg-emerald-50 transition-colors duration-150">
+                            <td className="px-6 py-4 text-sm font-medium text-gray-900">{r.appId}</td>
+                            <td className="px-6 py-4 text-sm text-gray-700">{r.server}</td>
+                            <td className="px-6 py-4 text-sm text-gray-700">{row.OSVersion || ''}</td>
+                            <td className="px-6 py-4 text-sm text-gray-700">{row ? formatUptime(row.UptimeSeconds) : ''}</td>
+                            <td className="px-6 py-4 text-sm">
+                              {autoStopped ? (
+                                <div className="space-y-1">
+                                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-red-700 bg-red-100 font-semibold mb-2">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm-2.47-9.53a1 1 0 011.414 0L10 8.586l1.056-1.056a1 1 0 111.414 1.414L11.414 10l1.056 1.056a1 1 0 11-1.414 1.414L10 11.414l-1.056 1.056a1 1 0 11-1.414-1.414L8.586 10 7.53 8.944a1 1 0 010-1.414z" clipRule="evenodd" />
+                                    </svg>
+                                    Stopped Services
+                                  </div>
+                                  <div className="text-sm text-red-600 font-mono bg-red-50 p-2 rounded border-l-4 border-red-400">
+                                    {autoStopped}
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-green-700 bg-green-100 font-semibold">
+                                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 00-1.414-1.414L8 11.172 4.707 7.879A1 1 0 003.293 9.293l4 4a1 1 0 001.414 0l8-8z" clipRule="evenodd" />
+                                  </svg>
+                                  All Services Running
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-6 py-4 text-sm">
+                              {iisStopped ? (
+                                <div className="space-y-1">
+                                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-red-700 bg-red-100 font-semibold mb-2">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm-2.47-9.53a1 1 0 011.414 0L10 8.586l1.056-1.056a1 1 0 111.414 1.414L11.414 10l1.056 1.056a1 1 0 11-1.414 1.414L10 11.414l-1.056 1.056a1 1 0 11-1.414-1.414L8.586 10 7.53 8.944a1 1 0 010-1.414z" clipRule="evenodd" />
+                                    </svg>
+                                    Stopped Websites
+                                  </div>
+                                  <div className="text-sm text-red-600 font-mono bg-red-50 p-2 rounded border-l-4 border-red-400">
+                                    {iisStopped}
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-green-700 bg-green-100 font-semibold">
+                                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 00-1.414-1.414L8 11.172 4.707 7.879A1 1 0 003.293 9.293l4 4a1 1 0 001.414 0l8-8z" clipRule="evenodd" />
+                                  </svg>
+                                  All Websites Running
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-6 py-4 text-sm">
+                              {stoppedPools ? (
+                                <div className="space-y-1">
+                                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-red-700 bg-red-100 font-semibold mb-2">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm-2.47-9.53a1 1 0 011.414 0L10 8.586l1.056-1.056a1 1 0 111.414 1.414L11.414 10l1.056 1.056a1 1 0 11-1.414 1.414L10 11.414l-1.056 1.056a1 1 0 11-1.414-1.414L8.586 10 7.53 8.944a1 1 0 010-1.414z" clipRule="evenodd" />
+                                    </svg>
+                                    Stopped App Pools
+                                  </div>
+                                  <div className="text-sm text-red-600 font-mono bg-red-50 p-2 rounded border-l-4 border-red-400">
+                                    {stoppedPools}
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-green-700 bg-green-100 font-semibold">
+                                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 00-1.414-1.414L8 11.172 4.707 7.879A1 1 0 003.293 9.293l4 4a1 1 0 001.414 0l8-8z" clipRule="evenodd" />
+                                  </svg>
+                                  All App Pools Running
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-6 py-4 text-sm text-red-600 break-all">{notes}</td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {activeTab === "eventlogs" && events.length > 0 && (
+        <div className="bg-white p-6 rounded-xl shadow-xl mb-8">
+          <div className="flex justify-between items-center mb-6">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-gradient-to-r from-purple-500 to-purple-600 rounded-xl shadow-lg">
+                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-xl font-bold bg-gradient-to-r from-purple-700 to-purple-900 bg-clip-text text-transparent">
+                  Event Logs Results
+                </h2>
+                <p className="text-gray-600 text-sm">
+                  Showing events from {eventChannel} channel
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                className="px-6 py-3 rounded-xl bg-gradient-to-r from-green-600 to-green-500 text-white font-semibold shadow-lg hover:from-green-700 hover:to-green-600 transition-all duration-200 flex items-center gap-2"
+                onClick={() => {
+                  const filteredEvents = (events || [])
+                    .filter((e) => !e._isDebugInfo) // Exclude debug entries
+                    .filter((e) => {
+                      if (!textQueryEvents) return true;
+                      const searchText = textQueryEvents.toLowerCase();
+                      const appId = e._appId || '';
+                      const server = e._server || '';
+                      const message = e.Message || e.Description || '';
+                      const source = e.ProviderName || e.Source || '';
+                      const level = e.LevelDisplayName || e.Level || e.EntryType || '';
+                      const eventId = String(e.Id || e.EventID || '');
+                      
+                      return appId.toLowerCase().includes(searchText) ||
+                             server.toLowerCase().includes(searchText) ||
+                             message.toLowerCase().includes(searchText) ||
+                             source.toLowerCase().includes(searchText) ||
+                             level.toLowerCase().includes(searchText) ||
+                             eventId.toLowerCase().includes(searchText);
+                    });
+                  
+                  const rows = filteredEvents.map((e) => ({
+                    AppID: e._appId,
+                    Server: e._server,
+                    TimeCreated: fmtEventTime(e.TimeCreated || e.TimeGenerated || e.RecordId || ''),
+                    Level: e.LevelDisplayName || e.Level || e.EntryType || '',
+                    Source: e.ProviderName || e.Source || '',
+                    EventID: e.Id || e.EventID || '',
+                    Message: e.Message || e.Description || '',
+                  }));
+                  if (rows.length > 0) exportToExcel(rows, 'event_logs');
+                }}
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                </svg>
+                Export to Excel
+              </button>
+              <button
+                className="px-4 py-2 rounded-xl bg-gradient-to-r from-gray-500 to-gray-400 text-white font-semibold shadow-lg hover:from-gray-600 hover:to-gray-500 transition-all duration-200 flex items-center gap-2"
+                onClick={() => setShowEventControls(true)}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                Edit Search
+              </button>
+            </div>
+          </div>
+
+          <div className="mb-6">
+            <div className="relative">
+              <svg className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              <input
+                type="text"
+                value={textQueryEvents}
+                onChange={(e) => setTextQueryEvents(e.target.value)}
+                placeholder="Search events by message, source, level, event ID, server, or app ID..."
+                className="w-full pl-10 pr-12 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent bg-gray-50 focus:bg-white transition-all duration-200"
+              />
+              {textQueryEvents && (
+                <button
+                  onClick={() => setTextQueryEvents("")}
+                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          </div>
+          {/* Group events by AppID and Server to match Services layout */}
+          {(() => {
+            const grouped = {};
+            const debugEntries = {};
+            let totalRealEvents = 0;
+            
+            (events || []).forEach((ev) => {
+              const appId = ev._appId || '';
+              const server = ev._server || '';
+              
+              // Handle debug entries (no events found messages) separately
+              if (ev._isDebugInfo) {
+                if (!debugEntries[appId]) debugEntries[appId] = {};
+                debugEntries[appId][server] = ev;
+                return;
+              }
+              
+              totalRealEvents++;
+              
+              // Don't filter here - let individual server sections handle the filtering
+              // This way we can show server sections even if only some events match
+              if (!grouped[appId]) grouped[appId] = {};
+              if (!grouped[appId][server]) grouped[appId][server] = [];
+              grouped[appId][server].push(ev);
+            });
+
+            // Show summary when no real events found but we have debug info
+            if (Object.keys(grouped).length === 0 && totalRealEvents === 0 && Object.keys(debugEntries).length > 0) {
+              return (
+                <div className="text-center py-12">
+                  <div className="inline-flex items-center justify-center w-20 h-20 bg-blue-100 rounded-full mb-6">
+                    <svg className="w-10 h-10 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <h3 className="text-xl font-bold text-gray-900 mb-3">No events found in time range</h3>
+                  <p className="text-gray-600 mb-4">
+                    The selected servers don't have any events in the specified time period.
+                  </p>
+                  <div className="bg-blue-50 rounded-lg p-4 mb-4 text-left max-w-md mx-auto">
+                    <h4 className="font-semibold text-blue-900 mb-2">Query Details:</h4>
+                    <ul className="text-sm text-blue-800 space-y-1">
+                      <li><strong>Channel:</strong> {eventChannel}</li>
+                      <li><strong>Time Range:</strong> {
+                        (!eventStart && !eventEnd) 
+                          ? `Last ${eventHours} hours` 
+                          : `${eventStart || 'Not specified'} to ${eventEnd || 'Current time'}`
+                      }</li>
+                      <li><strong>Servers Checked:</strong> {Object.keys(debugEntries).reduce((count, appId) => count + Object.keys(debugEntries[appId]).length, 0)}</li>
+                    </ul>
+                  </div>
+                  <div className="flex gap-3 justify-center">
+                    <button
+                      onClick={() => setShowEventControls(true)}
+                      className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors duration-200"
+                    >
+                      Adjust Search Parameters
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEventHours(24);
+                        setEventStart('');
+                        setEventEnd('');
+                      }}
+                      className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors duration-200"
+                    >
+                      Try Last 24 Hours
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
+            return Object.keys(grouped).length === 0 ? (
+              <div className="text-center py-12">
+                <div className="inline-flex items-center justify-center w-20 h-20 bg-purple-100 rounded-full mb-6">
+                  <svg className="w-10 h-10 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                </div>
+                <h3 className="text-xl font-bold text-gray-900 mb-3">No events found</h3>
+                <p className="text-gray-600 mb-4">No events match your current search criteria.</p>
+                {textQueryEvents && (
+                  <button
+                    onClick={() => setTextQueryEvents("")}
+                    className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors duration-200"
+                  >
+                    Clear search filter
+                  </button>
+                )}
+              </div>
+            ) : (
+              (() => {
+                // Check if any server has visible events after filtering
+                const hasVisibleEvents = Object.keys(grouped).some(appId => 
+                  Object.keys(grouped[appId] || {}).some(server => {
+                    const rows = grouped[appId][server] || [];
+                    const filteredRows = textQueryEvents ? rows.filter((ev) => {
+                      const searchText = textQueryEvents.toLowerCase();
+                      const appId = ev._appId || '';
+                      const server = ev._server || '';
+                      const message = ev.Message || ev.Description || '';
+                      const source = ev.ProviderName || ev.Source || '';
+                      const level = ev.LevelDisplayName || ev.Level || ev.EntryType || '';
+                      const eventId = String(ev.Id || ev.EventID || '');
+                      
+                      return appId.toLowerCase().includes(searchText) ||
+                             server.toLowerCase().includes(searchText) ||
+                             message.toLowerCase().includes(searchText) ||
+                             source.toLowerCase().includes(searchText) ||
+                             level.toLowerCase().includes(searchText) ||
+                             eventId.toLowerCase().includes(searchText);
+                    }) : rows;
+                    return filteredRows.length > 0;
+                  })
+                );
+
+                if (!hasVisibleEvents) {
+                  return (
+                    <div className="text-center py-12">
+                      <div className="inline-flex items-center justify-center w-20 h-20 bg-purple-100 rounded-full mb-6">
+                        <svg className="w-10 h-10 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                        </svg>
+                      </div>
+                      <h3 className="text-xl font-bold text-gray-900 mb-3">No events match search</h3>
+                      <p className="text-gray-600 mb-4">
+                        No events match your search term: <strong>"{textQueryEvents}"</strong>
+                      </p>
+                      <button
+                        onClick={() => setTextQueryEvents("")}
+                        className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors duration-200"
+                      >
+                        Clear search filter
+                      </button>
+                    </div>
+                  );
+                }
+
+                return Object.keys(grouped).map((appId) => (
+                <div key={appId} className="mb-8">
+                  {Object.keys(grouped[appId] || {}).map((server) => {
+                    const rows = grouped[appId][server] || [];
+                    
+                    // Apply text search filter to individual rows within this server
+                    const filteredRows = textQueryEvents ? rows.filter((ev) => {
+                      const searchText = textQueryEvents.toLowerCase();
+                      const appId = ev._appId || '';
+                      const server = ev._server || '';
+                      const message = ev.Message || ev.Description || '';
+                      const source = ev.ProviderName || ev.Source || '';
+                      const level = ev.LevelDisplayName || ev.Level || ev.EntryType || '';
+                      const eventId = String(ev.Id || ev.EventID || '');
+                      
+                      return appId.toLowerCase().includes(searchText) ||
+                             server.toLowerCase().includes(searchText) ||
+                             message.toLowerCase().includes(searchText) ||
+                             source.toLowerCase().includes(searchText) ||
+                             level.toLowerCase().includes(searchText) ||
+                             eventId.toLowerCase().includes(searchText);
+                    }) : rows;
+                    
+                    // Only show this server section if there are events after filtering
+                    if (filteredRows.length === 0) {
+                      return null;
+                    }
+                    
+                    return (
+                      <div key={server} className="mb-6 border-2 border-purple-200 rounded-xl shadow-lg bg-white overflow-hidden">
+                        <div className="px-6 py-4 bg-gradient-to-r from-purple-500 to-purple-600 border-b font-bold text-white">
+                          <div className="flex items-center gap-3">
+                            <div className="p-2 bg-white bg-opacity-20 rounded-lg">
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                              </svg>
+                            </div>
+                            <div>
+                              <span className="text-lg font-bold">AppID: {appId}</span>
+                              <span className="mx-3 text-purple-200">|</span>
+                              <span className="text-lg font-bold">Server: {server}</span>
+                            </div>
+                          </div>
+                        </div>
+                        {filteredRows.length > 0 ? (
+                          <div className="overflow-x-auto">
+                            <table className="w-full min-w-[800px]">
+                              <thead>
+                                <tr className="bg-gradient-to-r from-purple-50 to-purple-100 border-b border-purple-200">
+                                  <th className="px-6 py-4 text-left text-sm font-bold text-purple-900 uppercase tracking-wider">Time</th>
+                                  <th className="px-6 py-4 text-left text-sm font-bold text-purple-900 uppercase tracking-wider">Level</th>
+                                  <th className="px-6 py-4 text-left text-sm font-bold text-purple-900 uppercase tracking-wider">Source</th>
+                                  <th className="px-6 py-4 text-left text-sm font-bold text-purple-900 uppercase tracking-wider">Event ID</th>
+                                  <th className="px-6 py-4 text-left text-sm font-bold text-purple-900 uppercase tracking-wider">Message</th>
+                                </tr>
+                              </thead>
+                              <tbody className="bg-white divide-y divide-gray-200">
+                                {filteredRows.map((ev, i) => (
+                                  <tr key={`${server}-${i}`} className="hover:bg-purple-50 transition-colors duration-150">
+                                    <td className="px-6 py-4 text-sm">
+                                      <span className="px-3 py-1 bg-gray-100 text-gray-800 rounded-full text-xs font-mono">
+                                        {fmtEventTime(ev.TimeCreated || ev.TimeGenerated || '')}
+                                      </span>
+                                    </td>
+                                    <td className="px-6 py-4 text-sm">
+                                      <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                                        (ev.LevelDisplayName || ev.Level || '').toLowerCase().includes('error') 
+                                          ? 'bg-red-100 text-red-800'
+                                          : (ev.LevelDisplayName || ev.Level || '').toLowerCase().includes('warning') 
+                                          ? 'bg-yellow-100 text-yellow-800'
+                                          : 'bg-green-100 text-green-800'
+                                      }`}>
+                                        {ev.LevelDisplayName || ev.Level || ''}
+                                      </span>
+                                    </td>
+                                    <td className="px-6 py-4 text-sm font-medium text-gray-700">{ev.ProviderName || ev.Source || ''}</td>
+                                    <td className="px-6 py-4 text-sm">
+                                      <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-mono">
+                                        {ev.EventID || ev.Id || ''}
+                                      </span>
+                                    </td>
+                                    <td className="px-6 py-4 text-sm text-gray-600 max-w-md">
+                                      <div className="font-mono text-xs break-words" title={ev.Message || ev.Description || ''}>
+                                        {ev.Message || ev.Description || ''}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : (
+                          <div className="p-8 text-center">
+                            <div className="inline-flex items-center justify-center w-16 h-16 bg-purple-100 rounded-full mb-4">
+                              <svg className="w-8 h-8 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                              </svg>
+                            </div>
+                            <h3 className="text-lg font-semibold text-gray-900 mb-2">No events found</h3>
+                            <p className="text-gray-600">No events match your current search criteria.</p>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ));
+            })()
+            );
+          })()}
+        </div>
+      )}
+
+      {/* DNS Tool */}
+      {activeTab === "dns" && (
+        <div className="bg-gradient-to-br from-white to-gray-50 p-6 rounded-2xl shadow-2xl mb-6 border border-gray-100">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <div>
+              <label className="block font-semibold text-gray-700 mb-2">Hostnames or IP Addresses (one per line)</label>
+              <textarea
+                rows="4"
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-transparent bg-gray-50 focus:bg-white transition-all duration-200"
+                value={dnsQuery}
+                onChange={(e) => setDnsQuery(e.target.value)}
+                placeholder="google.com&#10;github.com&#10;8.8.8.8&#10;microsoft.com"
+              />
+            </div>
+            <div>
+              <label className="block font-semibold text-gray-700 mb-2">Record Type</label>
+              <select
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-transparent bg-gray-50 focus:bg-white transition-all duration-200"
+                value={dnsType}
+                onChange={(e) => setDnsType(e.target.value)}
+              >
+                <option value="A">A (IPv4)</option>
+                <option value="AAAA">AAAA (IPv6)</option>
+                <option value="CNAME">CNAME</option>
+                <option value="MX">MX (Mail)</option>
+                <option value="PTR">PTR (Reverse)</option>
+                <option value="TXT">TXT</option>
+                <option value="NS">NS</option>
+                <option value="SOA">SOA</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex justify-center mb-6 gap-4">
+            <button
+              type="button"
+              className={`group relative px-8 py-4 rounded-2xl font-bold shadow-xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-green-300 focus:ring-offset-2 overflow-hidden text-lg ${
+                loadingDNS 
+                  ? "bg-gray-400 cursor-not-allowed text-white" 
+                  : "bg-gradient-to-br from-green-500 via-green-600 to-green-700 hover:from-green-600 hover:via-green-700 hover:to-green-800 text-white shadow-green-300/50"
+              }`}
+              onClick={async () => {
+                if (!dnsQuery.trim()) {
+                  showAlert("Please enter at least one hostname or IP address.");
+                  return;
+                }
+                
+                const queries = dnsQuery.trim().split('\n').map(q => q.trim()).filter(q => q);
+                if (queries.length === 0) {
+                  showAlert("Please enter at least one valid hostname or IP address.");
+                  return;
+                }
+                
+                setLoadingDNS(true);
+                setDnsResults([]);
+                
+                // Prepare servers list for remote execution
+                const servers = [];
+                for (const appId of selectedAppIDs) {
+                  const appData = inventory[appId];
+                  if (appData && appData.servers) {
+                    for (const server of appData.servers) {
+                      if (selectedServers[appId] && selectedServers[appId].includes(server.name)) {
+                        servers.push({ 
+                          appId, 
+                          serverName: server.name,
+                          serverIP: server.ip,
+                          username, 
+                          password, 
+                          queries, 
+                          queryType: dnsType 
+                        });
+                      }
+                    }
+                  }
+                }
+                
+                if (servers.length === 0) {
+                  showAlert("Please select at least one server.");
+                  setLoadingDNS(false);
+                  return;
+                }
+                
+                try {
+                  // Use the remote DNS API
+                  const res = await api.post('/api/dns/remote', { servers });
+                  const results = res.data.results || [];
+                  
+                  // Flatten the results for display
+                  const flatResults = [];
+                  results.forEach(result => {
+                    if (result.data && Array.isArray(result.data)) {
+                      result.data.forEach(dnsResult => {
+                        flatResults.push({
+                          appId: result.appId,
+                          server: result.server,
+                          ...dnsResult
+                        });
+                      });
+                    }
+                    if (result.stderr) {
+                      flatResults.push({
+                        appId: result.appId,
+                        server: result.server,
+                        status: "ERROR",
+                        query: queries[0] || "Unknown",
+                        type: dnsType,
+                        result: "",
+                        dnsServer: "Unknown",
+                        configuredDnsServer: "Unknown",
+                        error: result.stderr,
+                        timestamp: ""
+                      });
+                    }
+                  });
+                  
+                  setDnsResults(flatResults);
+                  
+                  const successCount = flatResults.filter(r => r.status === 'SUCCESS').length;
+                  const totalCount = flatResults.length;
+                  
+                  showAlert(`✅ DNS resolution completed: ${successCount}/${totalCount} queries resolved from ${servers.length} server(s)`, "success");
+                  
+                } catch (e) {
+                  const msg = e?.response?.data?.detail || e.message || 'Failed to resolve DNS';
+                  showAlert(msg);
+                }
+                
+                setLoadingDNS(false);
+              }}
+              disabled={loadingDNS}
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000"></div>
+              <span className="relative flex items-center gap-3">
+                {loadingDNS ? (
+                  <>
+                    <span className="animate-spin text-xl">⏳</span>
+                    Resolving DNS...
+                  </>
+                ) : (
+                  <>
+                    <span className="text-xl">🔍</span>
+                    Resolve DNS
+                  </>
+                )}
+              </span>
+            </button>
+          </div>
+
+          {/* DNS Results */}
+          <DNSResults results={dnsResults} />
+        </div>
+      )}
+
+      {/* Remote Connectivity */}
+      {activeTab === "connectivity" && (
+        <div className="bg-gradient-to-br from-white to-gray-50 p-6 rounded-2xl shadow-2xl mb-6 border border-gray-100">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <div>
+              <label className="block font-semibold text-gray-700 mb-2">Remote Hosts (one per line)</label>
+              <textarea
+                rows="4"
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-violet-500 focus:border-transparent bg-gray-50 focus:bg-white transition-all duration-200"
+                value={remoteHost}
+                onChange={(e) => setRemoteHost(e.target.value)}
+                placeholder="google.com&#10;8.8.8.8&#10;microsoft.com&#10;192.168.1.1"
+              />
+              <p className="text-xs text-gray-500 mt-1">Enter hosts to test from selected servers</p>
+            </div>
+            <div>
+              <label className="block font-semibold text-gray-700 mb-2">Ports (comma-separated)</label>
+              <input
+                type="text"
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-violet-500 focus:border-transparent bg-gray-50 focus:bg-white transition-all duration-200"
+                value={remotePorts}
+                onChange={(e) => setRemotePorts(e.target.value)}
+                placeholder="80,443,3389,22"
+              />
+              <p className="text-xs text-gray-500 mt-1">Enter port numbers separated by commas</p>
+            </div>
+          </div>
+
+          <div className="flex justify-center mb-6">
+            <button
+              type="button"
+              className={`group relative px-8 py-4 rounded-2xl font-bold shadow-xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-violet-300 focus:ring-offset-2 overflow-hidden text-lg ${
+                loadingConnectivity 
+                  ? "bg-gray-400 cursor-not-allowed text-white" 
+                  : "bg-gradient-to-br from-violet-500 via-violet-600 to-violet-700 hover:from-violet-600 hover:via-violet-700 hover:to-violet-800 text-white shadow-violet-300/50"
+              }`}
+              onClick={async () => {
+                if (!validateSelection()) return;
+                if (!remoteHost.trim()) {
+                  showAlert("Please enter at least one remote host.");
+                  return;
+                }
+                if (!remotePorts.trim()) {
+                  showAlert("Please enter at least one port.");
+                  return;
+                }
+                
+                const hosts = remoteHost.trim().split('\n').map(h => h.trim()).filter(h => h);
+                if (hosts.length === 0) {
+                  showAlert("Please enter at least one valid remote host.");
+                  return;
+                }
+                
+                const ports = remotePorts.split(',').map(p => p.trim()).filter(p => p);
+                if (ports.length === 0) {
+                  showAlert("Please enter at least one valid port.");
+                  return;
+                }
+                
+                setLoadingConnectivity(true);
+                setConnectivityResults([]);
+                
+                // Prepare servers list for parallel execution
+                const servers = [];
+                const targets = hosts; // Use hosts as targets
+                
+                for (const appId of selectedAppIDs) {
+                  const appData = inventory[appId];
+                  if (appData && appData.servers) {
+                    for (const server of appData.servers) {
+                      if (selectedServers[appId] && selectedServers[appId].includes(server.name)) {
+                        servers.push({ 
+                          appId, 
+                          serverName: server.name,
+                          serverIP: server.ip,
+                          username, 
+                          password, 
+                          targets, 
+                          ports 
+                        });
+                      }
+                    }
+                  }
+                }
+                
+                if (servers.length === 0) {
+                  setLoadingConnectivity(false);
+                  return;
+                }
+
+                try {
+                  const res = await api.post('/api/connectivity/test_servers', { servers });
+                  const results = res.data.results || [];
+                  
+                  // Flatten the results to align with DNS results format
+                  const flatResults = [];
+                  results.forEach(result => {
+                    if (result.data && Array.isArray(result.data)) {
+                      result.data.forEach(connectivityResult => {
+                        flatResults.push({
+                          appId: result.appId,
+                          server: result.server,
+                          ...connectivityResult
+                        });
+                      });
+                    }
+                    if (result.stderr) {
+                      flatResults.push({
+                        appId: result.appId,
+                        server: result.server,
+                        success: false,
+                        partial: false,
+                        target: "N/A",
+                        port: "N/A",
+                        result: "Script execution failed",
+                        remoteAddress: "N/A",
+                        latency: "N/A",
+                        sourceIP: "N/A",
+                        error: result.stderr,
+                        timestamp: ""
+                      });
+                    }
+                  });
+                  
+                  setConnectivityResults(flatResults); // Pass flattened results to component
+                  showAlert(`✅ Connectivity test completed from ${servers.length} server(s)`, "success");
+                  
+                  // Collect server errors
+                  const errors = results.filter(result => result.stderr).map(result => ({
+                    appId: result.appId,
+                    serverName: result.server,
+                    message: result.stderr
+                  }));
+                  
+                  if (errors.length > 0) {
+                    setServerErrors((prev) => [...prev, ...errors]);
+                  }
+                  
+                } catch (e) {
+                  const msg = e?.response?.data?.detail || e.message || 'Failed to test connectivity';
+                  showAlert(msg);
+                }
+                
+                setLoadingConnectivity(false);
+              }}
+              disabled={loadingConnectivity}
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000"></div>
+              <span className="relative flex items-center gap-3">
+                {loadingConnectivity ? (
+                  <>
+                    <span className="animate-spin text-xl">⏳</span>
+                    Testing Connectivity...
+                  </>
+                ) : (
+                  <>
+                    <span className="text-xl">🔌</span>
+                    Test Connectivity
+                  </>
+                )}
+              </span>
+            </button>
+          </div>
+
+          {/* Connectivity Results */}
+          <ConnectivityResults results={connectivityResults} />
+        </div>
+      )}
+
+
+    </div>
+  );
+}
+
+export default HomeDashboard;
