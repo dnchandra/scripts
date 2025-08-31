@@ -1,0 +1,1418 @@
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
+import os
+import subprocess
+import json
+import re
+import asyncio
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any
+
+
+app = FastAPI()
+from routers import server_info
+app.include_router(server_info.router)
+INVENTORY_PATH = os.path.join(os.path.dirname(__file__), "app", "inventory.json")
+
+def sanitize_error_message(error_msg):
+    """Sanitize error messages to remove sensitive information like passwords and credentials."""
+    if not error_msg:
+        return error_msg
+
+    # Remove password patterns
+    import re
+
+    # Remove complete PowerShell credential setup commands
+    error_msg = re.sub(r'\$sp\s*=\s*ConvertTo-SecureString\s+[\'\"][^\'\"]*[\'\"]\s*-AsPlainText\s*-Force\s*;\s*\$cred\s*=\s*New-Object\s+System\.Management\.Automation\.PSCredential\s*\([^)]*\)\s*;?', '[CREDENTIALS REMOVED]', error_msg)
+
+    # Remove individual ConvertTo-SecureString commands
+    error_msg = re.sub(r'\$sp\s*=\s*ConvertTo-SecureString\s+[\'\"][^\'\"]*[\'\"]', '$sp = ConvertTo-SecureString \'***\'', error_msg)
+
+    # Remove individual New-Object PSCredential commands
+    error_msg = re.sub(r'New-Object\s+System\.Management\.Automation\.PSCredential\s*\([^)]*\)', 'New-Object System.Management.Automation.PSCredential(\'***\', ***))', error_msg)
+
+    # Remove Invoke-Command with credentials
+    error_msg = re.sub(r'Invoke-Command\s+-ComputerName\s+[\'\"][^\'\"]*[\'\"]\s+-Credential\s+\$[^\'\"\s]*', 'Invoke-Command -ComputerName *** -Credential ***', error_msg)
+
+    # Remove any remaining credential-related sensitive data
+    error_msg = re.sub(r'-Credential\s+\$[^\'\"\s]*', '-Credential ***', error_msg)
+
+    # Remove any other password patterns (case insensitive)
+    error_msg = re.sub(r'[\'\"]([^\'\"]*password[^\'\"]*)[\'\"]', '***', error_msg, flags=re.IGNORECASE)
+
+    # Remove any remaining credential patterns
+    error_msg = re.sub(r'[\'\"]([^\'\"]*admin[^\'\"]*)[\'\"]', '***', error_msg, flags=re.IGNORECASE)
+
+    return error_msg
+
+def load_inventory():
+    if not os.path.exists(INVENTORY_PATH):
+        return {}
+    with open(INVENTORY_PATH) as f:
+        return json.load(f)
+
+def save_inventory(data):
+    with open(INVENTORY_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+
+# Serve inventory list for frontend (AppID and server inventory only)
+@app.get("/api/inventory/list")
+def get_inventory_list():
+    try:
+        data = load_inventory()
+        return JSONResponse(content=data)
+    except Exception as e:
+        return JSONResponse(content={}, status_code=500)
+
+
+class ServerModel(BaseModel):
+    name: str = Field(...)
+    ip: str = Field(...)
+    function: str = Field(None, description="Optional server function/role")
+
+
+class AppIDModel(BaseModel):
+    appId: str = Field(...)
+    appName: str = Field("")
+    servers: list[ServerModel]
+
+
+# Helper validation functions
+import re
+def is_valid_server_name(name):
+    return bool(re.match(r'^[A-Za-z0-9.]+$', name))
+def is_valid_ip(ip):
+    return bool(re.match(r'^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$', ip))
+
+# Onboard new AppID with servers and appName
+@app.post("/api/inventory/add_appid")
+def add_appid(data: AppIDModel):
+    inventory = load_inventory()
+    if data.appId in inventory:
+        return JSONResponse(content={"detail": "AppID already exists."}, status_code=400)
+    # Validate servers
+    for srv in data.servers:
+        if not srv.name or not srv.ip:
+            return JSONResponse(content={"detail": "Server name and IP required for all servers."}, status_code=400)
+        if not is_valid_server_name(srv.name):
+            return JSONResponse(content={"detail": f"Invalid server name: {srv.name}. Only letters, numbers, and dot (.) allowed."}, status_code=400)
+        if not is_valid_ip(srv.ip):
+            return JSONResponse(content={"detail": f"Invalid IP address: {srv.ip}."}, status_code=400)
+    inventory[data.appId] = {
+        "appName": data.appName or "",
+        "servers": [
+            {"name": srv.name, "ip": srv.ip, "function": srv.function or ""} for srv in data.servers
+        ]
+    }
+    save_inventory(inventory)
+    return {"success": True}
+
+
+
+# Update AppID (replace all servers and appName)
+@app.post("/api/inventory/update_appid")
+def update_appid(data: AppIDModel):
+    inventory = load_inventory()
+    if data.appId not in inventory:
+        return JSONResponse(content={"detail": "AppID does not exist."}, status_code=404)
+    for srv in data.servers:
+        if not srv.name or not srv.ip:
+            return JSONResponse(content={"detail": "Server name and IP required."}, status_code=400)
+        if not is_valid_server_name(srv.name):
+            return JSONResponse(content={"detail": f"Invalid server name: {srv.name}. Only letters, numbers, and dot (.) allowed."}, status_code=400)
+        if not is_valid_ip(srv.ip):
+            return JSONResponse(content={"detail": f"Invalid IP address: {srv.ip}."}, status_code=400)
+    inventory[data.appId] = {
+        "appName": data.appName or inventory[data.appId].get("appName", ""),
+        "servers": [
+            {"name": srv.name, "ip": srv.ip, "function": srv.function or ""} for srv in data.servers
+        ]
+    }
+    save_inventory(inventory)
+    return {"success": True}
+
+
+# Decommission AppID
+@app.post("/api/inventory/decommission_appid")
+def decommission_appid(data: dict):
+    appId = data.get("appId")
+    inventory = load_inventory()
+    if appId not in inventory:
+        return JSONResponse(content={"detail": "AppID does not exist."}, status_code=404)
+    del inventory[appId]
+    save_inventory(inventory)
+    return {"success": True}
+
+
+
+# Add server to AppID
+@app.post("/api/inventory/add_server")
+def add_server(data: dict):
+    appId = data.get("appId")
+    server = data.get("server")
+    inventory = load_inventory()
+    if appId not in inventory:
+        return JSONResponse(content={"detail": "AppID does not exist."}, status_code=404)
+    if not server or not server.get("name") or not server.get("ip"):
+        return JSONResponse(content={"detail": "Server name and IP required."}, status_code=400)
+    if not is_valid_server_name(server["name"]):
+        return JSONResponse(content={"detail": f"Invalid server name: {server['name']}. Only letters, numbers, and dot (.) allowed."}, status_code=400)
+    if not is_valid_ip(server["ip"]):
+        return JSONResponse(content={"detail": f"Invalid IP address: {server['ip']}."}, status_code=400)
+    inventory[appId]["servers"].append({
+        "name": server["name"],
+        "ip": server["ip"],
+        "function": server.get("function", "")
+    })
+    save_inventory(inventory)
+    return {"success": True}
+
+
+
+# Delete server from AppID
+@app.post("/api/inventory/delete_server")
+def delete_server(data: dict):
+    appId = data.get("appId")
+    serverName = data.get("serverName")
+    inventory = load_inventory()
+    if appId not in inventory:
+        return JSONResponse(content={"detail": "AppID does not exist."}, status_code=404)
+    servers = inventory[appId]["servers"]
+    servers = [srv for srv in servers if srv.get("name") != serverName]
+    inventory[appId]["servers"] = servers
+    save_inventory(inventory)
+    return {"success": True}
+
+
+@app.post("/api/dns/remote")
+async def resolve_dns_remote(request: Request):
+    """
+    Resolve DNS queries on remote servers.
+    Expects: { servers: [{ appId, serverName, serverIP, username, password, queries: [...], queryType?, dnsServer? }, ...] }
+    Returns: { results: [{ appId, server, data: [{ query, recordType, result, configuredDnsServer, dnsServerUsed, timestamp, status, error? }, ...] }, ...] }
+    """
+    try:
+        data = await request.json()
+        servers = data.get("servers", [])
+        debug_mode = data.get("debug", False)  # Add debug mode
+
+        if not servers:
+            raise HTTPException(status_code=400, detail="No servers provided")
+
+        async def process_server(server_info):
+            app_id = server_info.get("appId")
+            server_name = server_info.get("serverName")
+            server_ip = server_info.get("serverIP", server_name)
+            username = server_info.get("username")
+            password = server_info.get("password")
+            queries = server_info.get("queries", [])
+            query_type = server_info.get("queryType", "A")
+            dns_server = server_info.get("dnsServer")
+
+            if not all([app_id, server_name, username, password, queries]):
+                return {
+                    "appId": app_id,
+                    "server": server_name,
+                    "data": [],
+                    "stderr": "Missing required parameters (appId, serverName, username, password, queries)"
+                }
+
+            # Process all DNS queries for this server in parallel
+            async def process_single_query(query):
+                try:
+                    # Build PowerShell command to invoke the DNS script remotely
+                    script_path = os.path.join(os.path.dirname(__file__), "scripts", "get_dns.ps1")
+
+                    if not os.path.exists(script_path):
+                        return {
+                            "appId": app_id,
+                            "server": server_name,
+                            "status": "ERROR",
+                            "query": query,
+                            "type": query_type,
+                            "result": "",
+                            "dnsServer": "Unknown",
+                            "configuredDnsServer": "Unknown",
+                            "error": "DNS script not found on server",
+                            "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                        }
+
+                    # Read the script content
+                    with open(script_path, 'r', encoding='utf-8') as f:
+                        script_content = f.read()
+
+                    # Escape credentials and parameters for PowerShell
+                    pwd_esc = (password or "").replace("'", "''")
+                    user_esc = (username or "").replace("'", "''")
+                    # Prefer hostname for WinRM to leverage Kerberos/NTLM without TrustedHosts; fallback to IP if name missing
+                    host_pref = server_name or server_ip
+                    host_esc = str(host_pref)
+                    query_esc = query.replace("'", "''")
+                    type_esc = query_type.replace("'", "''")
+                    dns_arg = f"-DnsServer '{dns_server}'" if dns_server else ""
+
+                    # Build PowerShell command using Invoke-Command with file copy approach
+                    # Copy script to remote temp file and execute it
+                    dns_arg_ps = f"-DnsServer '{dns_server}'" if dns_server else ""
+                    # Build PowerShell command using Invoke-Command with simplified inline script
+                    # Use a simplified script that just does the core DNS resolution
+                    dns_arg_ps = f"-DnsServer '{dns_server}'" if dns_server else ""
+                    simplified_script = f'''
+param($query, $type, $dnsSrv)
+try {{
+    # Get DNS server configuration
+    $configuredDnsServer = "Unknown"
+    try {{
+        $dnsServers = Get-DnsClientServerAddress | Where-Object {{
+            $_.InterfaceAlias -notlike '*Loopback*' -and
+            $_.ServerAddresses.Count -gt 0
+        }} | Select-Object -First 1
+
+        if ($dnsServers -and $dnsServers.ServerAddresses.Count -gt 0) {{
+            $configuredDnsServer = $dnsServers.ServerAddresses[0]
+        }}
+    }} catch {{
+        $configuredDnsServer = "Unknown"
+    }}
+
+    # Determine which DNS server to use
+    $actualDnsServer = if ($dnsSrv -and $null -ne $dnsSrv) {{ $dnsSrv }} else {{ $configuredDnsServer }}
+
+    $params = @{{ Name = $query; Type = $type; ErrorAction = 'Stop' }}
+    if ($dnsSrv -and $null -ne $dnsSrv) {{ $params['Server'] = $dnsSrv }}
+    $resp = Resolve-DnsName @params
+
+    $vals = @()
+    switch ($type.ToUpper()) {{
+        'A'     {{ $vals = ($resp | Where-Object {{ $_.Type -eq 'A' }} | Select-Object -ExpandProperty IPAddress) }}
+        'AAAA'  {{ $vals = ($resp | Where-Object {{ $_.Type -eq 'AAAA' }} | Select-Object -ExpandProperty IPAddress) }}
+        'CNAME' {{ $vals = ($resp | Where-Object {{ $_.Type -eq 'CNAME' }} | Select-Object -ExpandProperty NameHost) }}
+        'MX'    {{ $vals = ($resp | Where-Object {{ $_.Type -eq 'MX' }} | Select-Object -ExpandProperty NameExchange) }}
+        'PTR'   {{ $vals = ($resp | Where-Object {{ $_.Type -eq 'PTR' }} | Select-Object -ExpandProperty NameHost) }}
+        'NS'    {{ $vals = ($resp | Where-Object {{ $_.Type -eq 'NS' }} | Select-Object -ExpandProperty NameHost) }}
+        'TXT'   {{ $vals = ($resp | Where-Object {{ $_.Type -eq 'TXT' }} | ForEach-Object {{ ($_.Strings -join ' ') }}) }}
+        'SOA'   {{ $vals = ($resp | Where-Object {{ $_.Type -eq 'SOA' }} | Select-Object -ExpandProperty PrimaryServer) }}
+        default {{ $vals = @() }}
+    }}
+
+    if ($null -ne $vals -and $vals.Count -gt 0) {{
+        $result = $vals -join ", "
+        $output = @{{ status = "SUCCESS"; query = $query; type = $type; result = $result; dnsServer = $actualDnsServer; error = ""; timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") }}
+        Write-Output "DNS_RESULT|$($output | ConvertTo-Json -Compress)"
+    }} else {{
+        $output = @{{ status = "ERROR"; query = $query; type = $type; result = ""; dnsServer = $actualDnsServer; error = "No results found"; timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") }}
+        Write-Output "DNS_RESULT|$($output | ConvertTo-Json -Compress)"
+    }}
+}} catch {{
+    $output = @{{ status = "ERROR"; query = $query; type = $type; result = ""; dnsServer = "Unknown"; error = $_.Exception.Message; timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") }}
+    Write-Output "DNS_RESULT|$($output | ConvertTo-Json -Compress)"
+}}
+'''
+                    ps_cmd_str = (
+                        f"$sp = ConvertTo-SecureString '{pwd_esc}' -AsPlainText -Force; "
+                        f"$cred = New-Object System.Management.Automation.PSCredential('{user_esc}', $sp); "
+                        f"$script = @'\n{simplified_script}\n'@; "
+                        f"Invoke-Command -ComputerName '{host_esc}' -Credential $cred -ScriptBlock {{ "
+                        f"param($s, $q, $t, $d); "
+                        f"$sb = [ScriptBlock]::Create($s); "
+                        f"& $sb -query $q -type $t -dnsSrv {f'$d' if dns_server else '$null'}; "
+                        f"}} -ArgumentList $script, '{query_esc}', '{type_esc}', {f'\'{dns_server}\'' if dns_server else '$null'}"
+                    )
+
+                    # Execute the PowerShell command
+                    proc = subprocess.run(
+                        ["powershell", "-Command", ps_cmd_str],
+                        capture_output=True,
+                        text=True,
+                        encoding='utf-8',
+                        timeout=60
+                    )
+
+                    stdout_text = proc.stdout or ""
+                    stderr_text = proc.stderr or ""
+
+                    # Parse DNS_RESULT lines from stdout
+                    dns_pattern = re.compile(r"DNS_RESULT\|(.*)$")
+                    found_result = False
+
+                    for raw_line in stdout_text.splitlines():
+                        m = dns_pattern.search(raw_line)
+                        if not m:
+                            continue
+
+                        found_result = True
+                        payload = m.group(1).strip()
+
+                        try:
+                            parsed = json.loads(payload)
+                        except json.JSONDecodeError:
+                            try:
+                                # Try to extract JSON from malformed payload
+                                s = payload.find("{")
+                                e = payload.rfind("}")
+                                if s != -1 and e != -1 and e > s:
+                                    parsed = json.loads(payload[s:e+1])
+                                else:
+                                    parsed = None
+                            except Exception:
+                                parsed = None
+
+                        if isinstance(parsed, dict):
+                            # Normalize fields for frontend compatibility
+                            parsed.setdefault("timestamp", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
+                            parsed["appId"] = app_id
+                            parsed["server"] = server_name
+
+                            # Ensure recordType field exists
+                            if "type" in parsed and "recordType" not in parsed:
+                                parsed["recordType"] = parsed.get("type")
+
+                            # Ensure dnsServerUsed field exists
+                            if "dnsServer" in parsed and "dnsServerUsed" not in parsed:
+                                parsed["dnsServerUsed"] = parsed.get("dnsServer")
+
+                            return parsed
+                        else:
+                            return {
+                                "appId": app_id,
+                                "server": server_name,
+                                "status": "ERROR",
+                                "query": query,
+                                "type": query_type,
+                                "result": "",
+                                "dnsServer": "Unknown",
+                                "configuredDnsServer": "Unknown",
+                                "error": "Failed to parse DNS_RESULT payload",
+                                "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                            }
+
+                    if not found_result:
+                        return {
+                            "appId": app_id,
+                            "server": server_name,
+                            "status": "ERROR",
+                            "query": query,
+                            "type": query_type,
+                            "result": "",
+                            "dnsServer": "Unknown",
+                            "configuredDnsServer": "Unknown",
+                            "error": sanitize_error_message(stderr_text) or "No DNS result returned",
+                            "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                        }
+
+                except subprocess.TimeoutExpired:
+                    return {
+                        "appId": app_id,
+                        "server": server_name,
+                        "status": "ERROR",
+                        "query": query,
+                        "type": query_type,
+                        "result": "",
+                        "dnsServer": "Unknown",
+                        "configuredDnsServer": "Unknown",
+                        "error": "DNS query timed out",
+                        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                except Exception as e:
+                    return {
+                        "appId": app_id,
+                        "server": server_name,
+                        "status": "ERROR",
+                        "query": query,
+                        "type": query_type,
+                        "result": "",
+                        "dnsServer": "Unknown",
+                        "configuredDnsServer": "Unknown",
+                        "error": f"DNS query failed: {sanitize_error_message(str(e))}",
+                        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                    }
+
+            # Process all queries for this server in parallel
+            query_tasks = [process_single_query(query) for query in queries]
+            dns_results = await asyncio.gather(*query_tasks)
+
+            return {
+                "appId": app_id,
+                "server": server_name,
+                "data": dns_results,
+                "stderr": None,
+                "debug": None
+            }
+
+        # Process all servers concurrently
+        tasks = [process_server(s) for s in servers]
+        results = await asyncio.gather(*tasks)
+
+        return {"results": results}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DNS resolution failed: {str(e)}")
+
+
+# Connectivity Testing Endpoint
+@app.post("/api/connectivity/test_servers")
+async def test_connectivity_remote(request: Request):
+    try:
+        body = await request.json()
+        servers = body.get("servers", [])
+        debug_mode = body.get("debug", False)
+
+        if not servers:
+            raise HTTPException(status_code=400, detail="No servers specified")
+
+        async def process_server(server):
+            app_id = server.get("appId", "")
+            server_name = server.get("serverName", "")
+            server_ip = server.get("serverIP", server.get("ip", ""))
+            username = server.get("username", "")
+            password = server.get("password", "")
+            targets = server.get("targets", [])
+            ports = server.get("ports", [])
+
+            # If ports is a string, split it
+            if isinstance(ports, str):
+                ports = [p.strip() for p in ports.split(",") if p.strip()]
+
+            # If targets is a string, split it
+            if isinstance(targets, str):
+                targets = [t.strip() for t in targets.split(",") if t.strip()]
+
+            # Define the connectivity script (inline version with improved error handling)
+            simplified_script = '''
+param($target, $port)
+
+function Test-PortState {
+    param($ComputerName, $Port, $Timeout = 3000)
+    
+    $tcpClient = $null
+    try {
+        $tcpClient = New-Object System.Net.Sockets.TcpClient
+        $connectTask = $tcpClient.ConnectAsync($ComputerName, $Port)
+        $timeoutTask = [System.Threading.Tasks.Task]::Delay($Timeout)
+        $completed = [System.Threading.Tasks.Task]::WhenAny($connectTask, $timeoutTask).Result
+        
+        if ($completed -eq $connectTask) {
+            if ($tcpClient.Connected) {
+                $tcpClient.Close()
+                return @{ State="open"; Connected=$true; Error=$null }
+            } else {
+                return @{ State="refused"; Connected=$false; Error="Connection refused" }
+            }
+        } else {
+            $tcpClient.Close()
+            return @{ State="filtered"; Connected=$false; Error="Connection timeout" }
+        }
+    } catch [System.Net.Sockets.SocketException] {
+        if ($tcpClient) { $tcpClient.Close() }
+        switch ($_.Exception.SocketErrorCode) {
+            "ConnectionRefused" { return @{ State="refused"; Connected=$false; Error="Port refused" } }
+            "TimedOut" { return @{ State="filtered"; Connected=$false; Error="Connection timeout" } }
+            "HostUnreachable" { return @{ State="unreachable"; Connected=$false; Error="Host unreachable" } }
+            "NetworkUnreachable" { return @{ State="unreachable"; Connected=$false; Error="Network unreachable" } }
+            default { return @{ State="filtered"; Connected=$false; Error="Connection failed" } }
+        }
+    } catch {
+        if ($tcpClient) { $tcpClient.Close() }
+        return @{ State="unreachable"; Connected=$false; Error="Connection error" }
+    }
+}
+
+# Quick ICMP reachability check
+$icmpReachable = $false
+$latency = "N/A"
+try {
+    $p = Test-Connection -ComputerName $target -Count 1 | Select-Object -First 1
+    if ($p -and $null -ne $p.ResponseTime) {
+        $icmpReachable = $true
+        $latency = "$([math]::Round($p.ResponseTime))ms"
+    }
+} catch { }
+
+# Test TCP port with detailed classification
+$portState = Test-PortState -ComputerName $target -Port $port
+
+# Get source IP
+$sourceIP = "Unknown"
+try {
+    $addr = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+        $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*"
+    } | Select-Object -First 1
+    if ($addr) { $sourceIP = $addr.IPAddress }
+} catch { }
+
+# Get remote address
+$remoteAddress = "N/A"
+try {
+    $tnc = Test-NetConnection -ComputerName $target -Port $port -InformationLevel Detailed -WarningAction SilentlyContinue
+    if ($tnc -and $tnc.RemoteAddress -and $tnc.RemoteAddress.IPAddressToString) {
+        $remoteAddress = $tnc.RemoteAddress.IPAddressToString
+    } else {
+        $resolved = [System.Net.Dns]::GetHostAddresses($target) | Where-Object { $_.AddressFamily -eq "InterNetwork" } | Select-Object -First 1
+        if ($resolved) { $remoteAddress = $resolved.IPAddressToString }
+    }
+} catch {
+    try {
+        [void][System.Net.IPAddress]::Parse($target)
+        $remoteAddress = $target
+    } catch { }
+}
+
+# Compose result message
+$resultMsg = switch ($portState.State) {
+    "open" { "Port $port is OPEN on $target" }
+    "refused" { "Port $port is REFUSED on $target" }
+    "filtered" { "Port $port is FILTERED on $target" }
+    "unreachable" { "Connection to $target on port $port FAILED" }
+    default { "Connection state unknown for ${target}:$port" }
+}
+
+# Create output object
+$output = @{
+    success = $portState.Connected
+    partial = (-not $portState.Connected) -and $icmpReachable
+    target = $target
+    port = $port
+    result = $resultMsg
+    remoteAddress = $remoteAddress
+    latency = $latency
+    sourceIP = $sourceIP
+    error = $portState.Error
+    portState = $portState.State
+    timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+}
+
+"CONNECTIVITY_RESULT|$($output | ConvertTo-Json -Compress)"
+'''
+
+            # Find the connectivity script
+            script_path = os.path.join(os.path.dirname(__file__), "scripts", "test_connectivity.ps1")
+
+            if os.path.exists(script_path):
+                # Read the script content from file
+                with open(script_path, 'r', encoding='utf-8') as f:
+                    simplified_script = f.read()
+
+            # Process all target-port combinations in parallel
+            async def process_single_test(target, port):
+                try:
+                    # Escape credentials and parameters for PowerShell
+                    pwd_esc = (password or "").replace("'", "''")
+                    user_esc = (username or "").replace("'", "''")
+                    # Prefer hostname for WinRM to leverage Kerberos/NTLM without TrustedHosts; fallback to IP if name missing
+                    host_pref = server_name or server_ip
+                    host_esc = str(host_pref)
+                    target_esc = target.replace("'", "''")
+                    port_esc = str(port).replace("'", "''")
+
+                    # First check if server is reachable before attempting Invoke-Command
+                    reachability_check = f'''
+try {{
+    $ping = Test-Connection -ComputerName '{host_esc}' -Count 1 -ErrorAction Stop
+    if ($ping) {{
+        "SERVER_REACHABLE"
+    }} else {{
+        "SERVER_UNREACHABLE"
+    }}
+}} catch {{
+    "SERVER_UNREACHABLE"
+}}
+'''
+
+                    # Quick reachability test with short timeout
+                    reachability_proc = subprocess.run(
+                        ["powershell", "-Command", reachability_check],
+                        capture_output=True,
+                        text=True,
+                        encoding='utf-8',
+                        timeout=5  # 5 second timeout for reachability check
+                    )
+
+                    if "SERVER_UNREACHABLE" in (reachability_proc.stdout or "") or reachability_proc.returncode != 0:
+                        return {
+                            "appId": app_id,
+                            "server": server_name,
+                            "success": False,
+                            "partial": False,
+                            "target": target,
+                            "port": port,
+                            "result": f"Server {server_name} ({host_esc}) is unreachable - cannot perform connectivity test",
+                            "remoteAddress": "N/A",
+                            "latency": "N/A",
+                            "sourceIP": host_esc,
+                            "error": "Server unreachable - ping failed",
+                            "portState": "unreachable",
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }
+
+                    # Build PowerShell command using Invoke-Command for remote execution with timeout
+                    ps_cmd_str = (
+                        f"$sp = ConvertTo-SecureString '{pwd_esc}' -AsPlainText -Force; "
+                        f"$cred = New-Object System.Management.Automation.PSCredential('{user_esc}', $sp); "
+                        f"$script = @'\n{simplified_script}\n'@; "
+                        f"$ErrorActionPreference = 'Stop'; "
+                        f"$WarningPreference = 'SilentlyContinue'; "
+                        f"try {{ "
+                        f"    $result = Invoke-Command -ComputerName '{host_esc}' -Credential $cred -ScriptBlock {{ "
+                        f"        param($s, $t, $p); "
+                        f"        $sb = [ScriptBlock]::Create($s); "
+                        f"        & $sb -target $t -port $p; "
+                        f"    }} -ArgumentList $script, '{target_esc}', '{port_esc}' -ThrottleLimit 1; "
+                        f"    $result; "
+                        f"}} catch {{ "
+                        f"    Write-Error $_.Exception.Message; "
+                        f"}}"
+                    )
+                    proc = subprocess.run(
+                        ["powershell", "-Command", ps_cmd_str],
+                        capture_output=True,
+                        text=True,
+                        encoding='utf-8',
+                        timeout=20  # Reduced from 30 to 20 seconds
+                    )
+
+                    stdout_text = proc.stdout or ""
+                    stderr_text = proc.stderr or ""
+
+                    # Check for specific connectivity errors before parsing results
+                    if proc.returncode != 0 and not stdout_text and stderr_text:
+                        # Handle connectivity/authentication errors
+                        if "Access is denied" in stderr_text or "Access denied" in stderr_text:
+                            return {
+                                "appId": app_id,
+                                "server": server_name,
+                                "success": False,
+                                "partial": False,
+                                "target": target,
+                                "port": port,
+                                "result": f"Authentication failed for {server_name}",
+                                "remoteAddress": "N/A",
+                                "latency": "N/A",
+                                "sourceIP": host_esc,
+                                "error": "Access denied - check credentials",
+                                "portState": "error",
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            }
+                        elif "The RPC server is unavailable" in stderr_text:
+                            return {
+                                "appId": app_id,
+                                "server": server_name,
+                                "success": False,
+                                "partial": False,
+                                "target": target,
+                                "port": port,
+                                "result": f"Cannot connect to {server_name} - RPC unavailable",
+                                "remoteAddress": "N/A",
+                                "latency": "N/A",
+                                "sourceIP": host_esc,
+                                "error": "Server unreachable - RPC service unavailable",
+                                "portState": "unreachable",
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            }
+                        elif "WinRM" in stderr_text or "WS-Management" in stderr_text:
+                            return {
+                                "appId": app_id,
+                                "server": server_name,
+                                "success": False,
+                                "partial": False,
+                                "target": target,
+                                "port": port,
+                                "result": f"WinRM connection failed to {server_name}",
+                                "remoteAddress": "N/A",
+                                "latency": "N/A",
+                                "sourceIP": host_esc,
+                                "error": "WinRM/WS-Management service issue",
+                                "portState": "unreachable",
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            }
+
+                    # Check for PowerShell execution errors
+                    if proc.returncode != 0:
+                        error_msg = stderr_text.strip() if stderr_text else "PowerShell execution failed"
+                        sanitized_error = sanitize_error_message(error_msg)
+                        return {
+                            "appId": app_id,
+                            "server": server_name,
+                            "success": False,
+                            "partial": False,
+                            "target": target,
+                            "port": port,
+                            "result": f"PowerShell execution failed for {target}:{port}",
+                            "remoteAddress": "N/A",
+                            "latency": "N/A",
+                            "sourceIP": host_esc,
+                            "error": sanitized_error[:100] + "..." if len(sanitized_error) > 100 else sanitized_error,
+                            "portState": "error",
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }
+
+                    # Parse CONNECTIVITY_RESULT lines from stdout
+                    connectivity_pattern = re.compile(r"CONNECTIVITY_RESULT\|(.*)$")
+                    found_result = False
+
+                    for raw_line in stdout_text.splitlines():
+                        m = connectivity_pattern.search(raw_line)
+                        if not m:
+                            continue
+
+                        found_result = True
+                        payload = m.group(1).strip()
+
+                        try:
+                            parsed = json.loads(payload)
+                        except json.JSONDecodeError:
+                            try:
+                                # Try to extract JSON from malformed payload
+                                s = payload.find("{")
+                                e = payload.rfind("}")
+                                if s != -1 and e != -1 and e > s:
+                                    parsed = json.loads(payload[s:e+1])
+                                else:
+                                    parsed = None
+                            except Exception:
+                                parsed = None
+
+                        if isinstance(parsed, dict):
+                            # Normalize fields for frontend compatibility
+                            parsed.setdefault("timestamp", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
+                            parsed["appId"] = app_id
+                            parsed["server"] = server_name
+
+                            return parsed
+                        else:
+                            return {
+                                "appId": app_id,
+                                "server": server_name,
+                                "success": False,
+                                "partial": False,
+                                "target": target,
+                                "port": port,
+                                "result": "Failed to parse connectivity result",
+                                "remoteAddress": "N/A",
+                                "latency": "N/A",
+                                "sourceIP": host_esc,
+                                "error": "Failed to parse CONNECTIVITY_RESULT payload",
+                                "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                            }
+
+                    if not found_result:
+                        return {
+                            "appId": app_id,
+                            "server": server_name,
+                            "success": False,
+                            "partial": False,
+                            "target": target,
+                            "port": port,
+                            "result": "No connectivity result returned",
+                            "remoteAddress": "N/A",
+                            "latency": "N/A",
+                            "sourceIP": host_esc,
+                            "error": sanitize_error_message(stderr_text) or "No connectivity result returned",
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }
+
+                except subprocess.TimeoutExpired:
+                    return {
+                        "appId": app_id,
+                        "server": server_name,
+                        "success": False,
+                        "partial": False,
+                        "target": target,
+                        "port": port,
+                        "result": f"Connection timeout testing {target}:{port} on {server_name}",
+                        "remoteAddress": "N/A",
+                        "latency": "N/A",
+                        "sourceIP": host_esc,
+                        "error": "Connection timeout - server may be unreachable or overloaded",
+                        "portState": "unreachable",
+                        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                except Exception as e:
+                    error_msg = str(e)
+                    # Sanitize the raw error message first
+                    error_msg = sanitize_error_message(error_msg)
+
+                    # Provide more specific error messages based on exception type
+                    if "WinRM" in error_msg or "WS-Management" in error_msg:
+                        port_state = "unreachable"
+                        result_msg = f"WinRM connection failed to {server_name}"
+                        error_detail = "WinRM service unavailable or misconfigured"
+                    elif "Authentication" in error_msg or "credential" in error_msg.lower():
+                        port_state = "error"
+                        result_msg = f"Authentication failed for {server_name}"
+                        error_detail = "Invalid credentials or insufficient permissions"
+                    elif "network" in error_msg.lower() or "unreachable" in error_msg.lower():
+                        port_state = "unreachable"
+                        result_msg = f"Network error connecting to {server_name}"
+                        error_detail = "Network connectivity issue"
+                    else:
+                        port_state = "error"
+                        result_msg = f"Connection test failed for {target}:{port}"
+                        error_detail = sanitize_error_message(error_msg[:100] + "..." if len(error_msg) > 100 else error_msg)
+
+                    return {
+                        "appId": app_id,
+                        "server": server_name,
+                        "success": False,
+                        "partial": False,
+                        "target": target,
+                        "port": port,
+                        "result": result_msg,
+                        "remoteAddress": "N/A",
+                        "latency": "N/A",
+                        "sourceIP": host_esc,
+                        "error": error_detail,
+                        "portState": port_state,
+                        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                    }
+
+            # Create all target-port combinations
+            test_combinations = [(target, port) for target in targets for port in ports]
+
+            # Process all combinations in parallel
+            test_tasks = [process_single_test(target, port) for target, port in test_combinations]
+            connectivity_results = await asyncio.gather(*test_tasks)
+
+            return {
+                "appId": app_id,
+                "server": server_name,
+                "data": connectivity_results,
+                "stderr": None,
+                "debug": None
+            }
+
+        # Process all servers concurrently
+        tasks = [process_server(s) for s in servers]
+        results = await asyncio.gather(*tasks)
+
+        return {"results": results}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Connectivity test failed: {str(e)}")
+
+
+# Streaming (SSE-like) Connectivity Testing Endpoint for live updates
+@app.post("/api/connectivity/test_servers_stream")
+async def test_connectivity_stream(request: Request):
+    try:
+        body = await request.json()
+        servers = body.get("servers", [])
+        debug_mode = body.get("debug", False)
+
+        if not servers:
+            raise HTTPException(status_code=400, detail="No servers specified")
+
+        async def gen():
+            try:
+                # Emit a start event with rough totals (servers count) and a sanitized server list
+                try:
+                    sanitized = []
+                    for s_item in servers:
+                        sanitized.append({
+                            "appId": s_item.get("appId", ""),
+                            "serverName": s_item.get("serverName", s_item.get("server", s_item.get("name", ""))),
+                            "serverIP": s_item.get("serverIP", s_item.get("ip", ""))
+                        })
+                except Exception:
+                    sanitized = []
+
+                start_payload = {"type": "start", "servers": len(servers), "serverList": sanitized}
+                yield f"data: {json.dumps(start_payload)}\n\n"
+                # Bounded concurrency to protect server
+                import os as _os
+                sem = asyncio.Semaphore(int(_os.environ.get("CONNECTIVITY_MAX_CONCURRENCY", 12)))
+
+                tasks = []
+                expected_counts = {}
+                emitted_counts = {}
+
+                for s in servers:
+                    # Read inputs
+                    app_id = s.get("appId", "")
+                    server_name = s.get("serverName", "")
+                    server_ip = s.get("serverIP", s.get("ip", ""))
+                    username = s.get("username", "")
+                    password = s.get("password", "")
+                    targets = s.get("targets", [])
+                    ports = s.get("ports", [])
+
+                    if isinstance(ports, str):
+                        ports = [p.strip() for p in ports.split(",") if p.strip()]
+                    if isinstance(targets, str):
+                        targets = [t.strip() for t in targets.split(",") if t.strip()]
+
+                    # Track how many tests we expect for this server so we can emit server_end
+                    server_key = f"{app_id}|{server_name}"
+                    expected = (len(ports) * len(targets)) if ports and targets else 0
+                    expected_counts[server_key] = expected
+                    emitted_counts[server_key] = 0
+
+                    # Emit a sanitized server_start event so frontend can know backend is processing it
+                    try:
+                        server_start = {"type": "server_start", "appId": app_id, "server": server_name, "serverIP": server_ip, "expected": expected}
+                        yield f"data: {json.dumps(server_start)}\n\n"
+                    except Exception:
+                        pass
+
+                    # Build or read the inline PowerShell script (same as non-streaming endpoint)
+                    simplified_script = '''
+param($target, $port)
+
+function Test-PortState {
+    param($ComputerName, $Port, $Timeout = 3000)
+    
+    $tcpClient = $null
+    try {
+        $tcpClient = New-Object System.Net.Sockets.TcpClient
+        $connectTask = $tcpClient.ConnectAsync($ComputerName, $Port)
+        $timeoutTask = [System.Threading.Tasks.Task]::Delay($Timeout)
+        $completed = [System.Threading.Tasks.Task]::WhenAny($connectTask, $timeoutTask).Result
+        
+        if ($completed -eq $connectTask) {
+            if ($tcpClient.Connected) {
+                $tcpClient.Close()
+                return @{ State="open"; Connected=$true; Error=$null }
+            } else {
+                return @{ State="refused"; Connected=$false; Error="Connection refused" }
+            }
+        } else {
+            $tcpClient.Close()
+            return @{ State="filtered"; Connected=$false; Error="Connection timeout" }
+        }
+    } catch [System.Net.Sockets.SocketException] {
+        if ($tcpClient) { $tcpClient.Close() }
+        switch ($_.Exception.SocketErrorCode) {
+            "ConnectionRefused" { return @{ State="refused"; Connected=$false; Error="Port refused" } }
+            "TimedOut" { return @{ State="filtered"; Connected=$false; Error="Connection timeout" } }
+            "HostUnreachable" { return @{ State="unreachable"; Connected=$false; Error="Host unreachable" } }
+            "NetworkUnreachable" { return @{ State="unreachable"; Connected=$false; Error="Network unreachable" } }
+            default { return @{ State="filtered"; Connected=$false; Error="Connection failed" } }
+        }
+    } catch {
+        if ($tcpClient) { $tcpClient.Close() }
+        return @{ State="unreachable"; Connected=$false; Error="Connection error" }
+    }
+}
+
+# Quick ICMP reachability check
+$icmpReachable = $false
+$latency = "N/A"
+try {
+    $p = Test-Connection -ComputerName $target -Count 1 | Select-Object -First 1
+    if ($p -and $null -ne $p.ResponseTime) {
+        $icmpReachable = $true
+        $latency = "$([math]::Round($p.ResponseTime))ms"
+    }
+} catch { }
+
+# Test TCP port with detailed classification
+$portState = Test-PortState -ComputerName $target -Port $port
+
+# Get source IP
+$sourceIP = "Unknown"
+try {
+    $addr = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+        $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*"
+    } | Select-Object -First 1
+    if ($addr) { $sourceIP = $addr.IPAddress }
+} catch { }
+
+# Get remote address
+$remoteAddress = "N/A"
+try {
+    $tnc = Test-NetConnection -ComputerName $target -Port $port -InformationLevel Detailed -WarningAction SilentlyContinue
+    if ($tnc -and $tnc.RemoteAddress -and $tnc.RemoteAddress.IPAddressToString) {
+        $remoteAddress = $tnc.RemoteAddress.IPAddressToString
+    } else {
+        $resolved = [System.Net.Dns]::GetHostAddresses($target) | Where-Object { $_.AddressFamily -eq "InterNetwork" } | Select-Object -First 1
+        if ($resolved) { $remoteAddress = $resolved.IPAddressToString }
+    }
+} catch {
+    try {
+        [void][System.Net.IPAddress]::Parse($target)
+        $remoteAddress = $target
+    } catch { }
+}
+
+# Compose result message
+$resultMsg = switch ($portState.State) {
+    "open" { "Port $port is OPEN on $target" }
+    "refused" { "Port $port is REFUSED on $target" }
+    "filtered" { "Port $port is FILTERED on $target" }
+    "unreachable" { "Connection to $target on port $port FAILED" }
+    default { "Connection state unknown for ${target}:$port" }
+}
+
+# Create output object
+$output = @{
+    success = $portState.Connected
+    partial = (-not $portState.Connected) -and $icmpReachable
+    target = $target
+    port = $port
+    result = $resultMsg
+    remoteAddress = $remoteAddress
+    latency = $latency
+    sourceIP = $sourceIP
+    error = $portState.Error
+    portState = $portState.State
+    timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+}
+
+"CONNECTIVITY_RESULT|$($output | ConvertTo-Json -Compress)"
+'''
+
+                    script_path = os.path.join(os.path.dirname(__file__), "scripts", "test_connectivity.ps1")
+                    if os.path.exists(script_path):
+                        with open(script_path, 'r', encoding='utf-8') as f:
+                            simplified_script = f.read()
+
+                    async def process_single_test(target, port, _app_id, _server_name, _server_ip, _username, _password):
+                        async with sem:
+                            try:
+                                pwd_esc = (_password or "").replace("'", "''")
+                                user_esc = (_username or "").replace("'", "''")
+                                # Prefer hostname for WinRM; fallback to IP
+                                _host_pref = _server_name or _server_ip
+                                host_esc = str(_host_pref)
+                                target_esc = target.replace("'", "''")
+                                port_esc = str(port).replace("'", "''")
+
+                                reachability_check = f'''
+try {{
+    $ping = Test-Connection -ComputerName '{host_esc}' -Count 1 -ErrorAction Stop
+    if ($ping) {{
+        "SERVER_REACHABLE"
+    }} else {{
+        "SERVER_UNREACHABLE"
+    }}
+}} catch {{
+    "SERVER_UNREACHABLE"
+}}
+'''
+                                reachability_proc = await asyncio.to_thread(
+                                    subprocess.run,
+                                    ["powershell", "-Command", reachability_check],
+                                    capture_output=True,
+                                    text=True,
+                                    encoding='utf-8',
+                                    timeout=5
+                                )
+
+                                if "SERVER_UNREACHABLE" in (reachability_proc.stdout or "") or reachability_proc.returncode != 0:
+                                    return {
+                                        "appId": _app_id,
+                                        "server": _server_name,
+                                        "success": False,
+                                        "partial": False,
+                                        "target": target,
+                                        "port": port,
+                                        "result": f"Server {_server_name} ({host_esc}) is unreachable - cannot perform connectivity test",
+                                        "remoteAddress": "N/A",
+                                        "latency": "N/A",
+                                        "sourceIP": host_esc,
+                                        "error": "Server unreachable - ping failed",
+                                        "portState": "unreachable",
+                                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    }
+
+                                ps_cmd_str = (
+                                    f"$sp = ConvertTo-SecureString '{pwd_esc}' -AsPlainText -Force; "
+                                    f"$cred = New-Object System.Management.Automation.PSCredential('{user_esc}', $sp); "
+                                    f"$script = @'\n{simplified_script}\n'@; "
+                                    f"$ErrorActionPreference = 'Stop'; "
+                                    f"$WarningPreference = 'SilentlyContinue'; "
+                                    f"try {{ "
+                                    f"    $result = Invoke-Command -ComputerName '{host_esc}' -Credential $cred -ScriptBlock {{ "
+                                    f"        param($s, $t, $p); "
+                                    f"        $sb = [ScriptBlock]::Create($s); "
+                                    f"        & $sb -target $t -port $p; "
+                                    f"    }} -ArgumentList $script, '{target_esc}', '{port_esc}' -ThrottleLimit 1; "
+                                    f"    $result; "
+                                    f"}} catch {{ "
+                                    f"    Write-Error $_.Exception.Message; "
+                                    f"}}"
+                                )
+                                proc = await asyncio.to_thread(
+                                    subprocess.run,
+                                    ["powershell", "-Command", ps_cmd_str],
+                                    capture_output=True,
+                                    text=True,
+                                    encoding='utf-8',
+                                    timeout=20
+                                )
+
+                                stdout_text = proc.stdout or ""
+                                stderr_text = proc.stderr or ""
+
+                                found_result = False
+                                for line in stdout_text.splitlines():
+                                    if line.strip().startswith("CONNECTIVITY_RESULT|"):
+                                        try:
+                                            payload = line.split("|", 1)[1].strip()
+                                            data = json.loads(payload)
+                                            data["appId"] = _app_id
+                                            data["server"] = _server_name
+                                            found_result = True
+                                            return data
+                                        except Exception:
+                                            pass
+
+                                if proc.returncode != 0 and stderr_text and not found_result:
+                                    return {
+                                        "appId": _app_id,
+                                        "server": _server_name,
+                                        "success": False,
+                                        "partial": False,
+                                        "target": target,
+                                        "port": port,
+                                        "result": "Failed to parse connectivity result",
+                                        "remoteAddress": "N/A",
+                                        "latency": "N/A",
+                                        "sourceIP": host_esc,
+                                        "error": sanitize_error_message(stderr_text),
+                                        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                                    }
+
+                                if not found_result:
+                                    return {
+                                        "appId": _app_id,
+                                        "server": _server_name,
+                                        "success": False,
+                                        "partial": False,
+                                        "target": target,
+                                        "port": port,
+                                        "result": "No connectivity result returned",
+                                        "remoteAddress": "N/A",
+                                        "latency": "N/A",
+                                        "sourceIP": host_esc,
+                                        "error": sanitize_error_message(stderr_text) or "No connectivity result returned",
+                                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    }
+                            except subprocess.TimeoutExpired:
+                                return {
+                                    "appId": _app_id,
+                                    "server": _server_name,
+                                    "success": False,
+                                    "partial": False,
+                                    "target": target,
+                                    "port": port,
+                                    "result": f"Connection timeout testing {target}:{port} on {_server_name}",
+                                    "remoteAddress": "N/A",
+                                    "latency": "N/A",
+                                    "sourceIP": host_esc,
+                                    "error": "Connection timeout - server may be unreachable or overloaded",
+                                    "portState": "unreachable",
+                                    "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                                }
+                            except Exception as e:
+                                error_msg = sanitize_error_message(str(e))
+                                return {
+                                    "appId": _app_id,
+                                    "server": _server_name,
+                                    "success": False,
+                                    "partial": False,
+                                    "target": target,
+                                    "port": port,
+                                    "result": f"Connection test failed for {target}:{port}",
+                                    "remoteAddress": "N/A",
+                                    "latency": "N/A",
+                                    "sourceIP": host_esc,
+                                    "error": error_msg,
+                                    "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                                }
+
+                    # Queue up tasks for this server; we'll stream as they complete globally
+                    for port in ports:
+                        for target in targets:
+                            tasks.append(asyncio.create_task(process_single_test(target, port, app_id, server_name, server_ip, username, password)))
+
+                # Stream results as they finish across all servers/ports/targets
+                for fut in asyncio.as_completed(tasks):
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        result_obj = await fut
+                        event = {"type": "result", **result_obj}
+                        yield f"data: {json.dumps(event)}\n\n"
+                        # Update per-server emitted count and emit server_end when all expected
+                        try:
+                            sk = f"{result_obj.get('appId','')}|{result_obj.get('server','')}"
+                            emitted_counts[sk] = emitted_counts.get(sk, 0) + 1
+                            if emitted_counts.get(sk, 0) >= expected_counts.get(sk, 0) and expected_counts.get(sk, 0) > 0:
+                                try:
+                                    server_end = {"type": "server_end", "appId": result_obj.get('appId',''), "server": result_obj.get('server',''), "serverIP": result_obj.get('sourceIP') or result_obj.get('serverIP')}
+                                    yield f"data: {json.dumps(server_end)}\n\n"
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+                # End event
+                yield f"data: {json.dumps({'type': 'end'})}\n\n"
+            except Exception as inner_e:
+                # Error event
+                err_payload = {"type": "error", "message": str(inner_e)}
+                yield f"data: {json.dumps(err_payload)}\n\n"
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Connectivity streaming failed: {str(e)}")
+
+
+# Streaming DNS resolution (SSE) with bounded concurrency
+@app.post("/api/dns/remote_stream")
+async def dns_remote_stream(request: Request):
+    try:
+        body = await request.json()
+        servers = body.get("servers", [])
+        max_concurrency = int(body.get("concurrency", os.environ.get("DNS_MAX_CONCURRENCY", 12)))
+
+        if not servers:
+            raise HTTPException(status_code=400, detail="No servers specified")
+
+        # Inline simplified resolve script executed remotely
+        simplified_script = '''
+param($query, $type, $dnsSrv)
+try {
+    # Get DNS server configuration
+    $configuredDnsServer = "Unknown"
+    try {
+        $dnsServers = Get-DnsClientServerAddress | Where-Object {
+            $_.InterfaceAlias -notlike '*Loopback*' -and $_.ServerAddresses.Count -gt 0
+        } | Select-Object -First 1
+        if ($dnsServers -and $dnsServers.ServerAddresses.Count -gt 0) {
+            $configuredDnsServer = $dnsServers.ServerAddresses[0]
+        }
+    } catch { $configuredDnsServer = "Unknown" }
+
+    $params = @{ Name = $query; Type = $type; ErrorAction = 'Stop' }
+    if ($dnsSrv -and $null -ne $dnsSrv) { $params['Server'] = $dnsSrv }
+    $resp = Resolve-DnsName @params
+
+    $vals = @()
+    switch ($type.ToUpper()) {
+        'A'     { $vals = ($resp | Where-Object { $_.Type -eq 'A' } | Select-Object -ExpandProperty IPAddress) }
+        'AAAA'  { $vals = ($resp | Where-Object { $_.Type -eq 'AAAA' } | Select-Object -ExpandProperty IPAddress) }
+        'CNAME' { $vals = ($resp | Where-Object { $_.Type -eq 'CNAME' } | Select-Object -ExpandProperty NameHost) }
+        'MX'    { $vals = ($resp | Where-Object { $_.Type -eq 'MX' } | Select-Object -ExpandProperty NameExchange) }
+        'PTR'   { $vals = ($resp | Where-Object { $_.Type -eq 'PTR' } | Select-Object -ExpandProperty NameHost) }
+        'NS'    { $vals = ($resp | Where-Object { $_.Type -eq 'NS' } | Select-Object -ExpandProperty NameHost) }
+        'TXT'   { $vals = ($resp | Where-Object { $_.Type -eq 'TXT' } | ForEach-Object { ($_.Strings -join ' ') }) }
+        'SOA'   { $vals = ($resp | Where-Object { $_.Type -eq 'SOA' } | Select-Object -ExpandProperty PrimaryServer) }
+        default { $vals = @() }
+    }
+
+    # prefer explicitly provided server, else show configured primary
+    $dnsUsed = if ($dnsSrv -and $dnsSrv.Trim().Length -gt 0) { $dnsSrv } else { $configuredDnsServer }
+
+    if ($null -ne $vals -and $vals.Count -gt 0) {
+        $result = $vals -join ", "
+        $output = @{ status = "SUCCESS"; query = $query; recordType = $type; result = $result; dnsServer = $dnsUsed; configuredDnsServer = $configuredDnsServer; error = ""; timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") }
+    } else {
+        $output = @{ status = "NOTFOUND"; query = $query; recordType = $type; result = ""; dnsServer = $dnsUsed; configuredDnsServer = $configuredDnsServer; error = "No records found"; timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") }
+    }
+} catch {
+    $dnsUsed = if ($dnsSrv -and $dnsSrv.Trim().Length -gt 0) { $dnsSrv } else { $configuredDnsServer }
+    $output = @{ status = "ERROR"; query = $query; recordType = $type; result = ""; dnsServer = $dnsUsed; configuredDnsServer = $configuredDnsServer; error = $_.Exception.Message; timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") }
+}
+"DNS_RESULT|$($output | ConvertTo-Json -Compress)"
+'''
+
+        sem = asyncio.Semaphore(max_concurrency)
+
+        # Build task list (server, query)
+        work = []
+        for s in servers:
+            app_id = s.get("appId", "")
+            server_name = s.get("serverName", "")
+            server_ip = s.get("serverIP", s.get("ip", ""))
+            username = s.get("username", "")
+            password = s.get("password", "")
+            queries = s.get("queries", [])
+            qtype = s.get("queryType", "A")
+            dns_server = s.get("dnsServer")
+            if isinstance(queries, str):
+                queries = [q.strip() for q in queries.split("\n") if q.strip()]
+            for q in queries:
+                work.append((app_id, server_name, server_ip, username, password, q, qtype, dns_server))
+
+        async def resolve_single(item):
+            app_id, server_name, server_ip, username, password, query, qtype, dns_server = item
+            pwd_esc = (password or "").replace("'", "''")
+            user_esc = (username or "").replace("'", "''")
+            # Prefer hostname; fallback to IP
+            host_pref = server_name or server_ip
+            host_esc = str(host_pref)
+            query_esc = str(query).replace("'", "''")
+            type_esc = str(qtype).replace("'", "''")
+            dns_arg = f"-DnsServer '{dns_server}'" if dns_server else ""
+
+            ps_cmd_str = (
+                f"$sp = ConvertTo-SecureString '{pwd_esc}' -AsPlainText -Force; "
+                f"$cred = New-Object System.Management.Automation.PSCredential('{user_esc}', $sp); "
+                f"$script = @'\n{simplified_script}\n'@; "
+                f"$ErrorActionPreference = 'Stop'; $WarningPreference = 'SilentlyContinue'; try {{ "
+                f"    $result = Invoke-Command -ComputerName '{host_esc}' -Credential $cred -ScriptBlock {{ param($s,$q,$t,$d); $sb=[ScriptBlock]::Create($s); & $sb -query $q -type $t -dnsSrv $d; }} -ArgumentList $script, '{query_esc}', '{type_esc}', '{dns_server or ''}'; "
+                f"    $result; }} catch {{ Write-Error $_.Exception.Message; }}"
+            )
+
+            async with sem:
+                proc = await asyncio.to_thread(
+                    subprocess.run,
+                    ("powershell", "-Command", ps_cmd_str),
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    timeout=15,
+                )
+            stdout_text = proc.stdout or ""
+            stderr_text = proc.stderr or ""
+
+            # Parse DNS_RESULT
+            for line in stdout_text.splitlines():
+                if line.strip().startswith("DNS_RESULT|"):
+                    try:
+                        payload = line.split("|", 1)[1].strip()
+                        data = json.loads(payload)
+                        data["appId"], data["server"] = app_id, server_name
+                        return data
+                    except Exception:
+                        pass
+
+            # Error fallback
+            return {
+                "appId": app_id,
+                "server": server_name,
+                "status": "ERROR",
+                "query": query,
+                "recordType": qtype,
+                "result": "",
+                "dnsServer": dns_server or "",
+                "configuredDnsServer": "Unknown",
+                "error": sanitize_error_message(stderr_text) or "Failed to resolve",
+                "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            }
+
+        async def gen():
+            try:
+                yield f"data: {json.dumps({'type':'start','servers': len(servers), 'queries': len(work)})}\n\n"
+                tasks = [asyncio.create_task(resolve_single(item)) for item in work]
+                for fut in asyncio.as_completed(tasks):
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        row = await fut
+                        yield f"data: {json.dumps({'type':'result', **row})}\n\n"
+                    except Exception as e:
+                        yield f"data: {json.dumps({'type':'error','message': str(e)})}\n\n"
+                yield f"data: {json.dumps({'type':'end'})}\n\n"
+            except Exception as inner:
+                yield f"data: {json.dumps({'type':'error','message': str(inner)})}\n\n"
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DNS streaming failed: {str(e)}")
