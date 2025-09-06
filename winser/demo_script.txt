@@ -1,0 +1,31 @@
+
+
+
+
+Frontend (UI Layer)
+
+React → Builds the interactive web dashboard (tables, filters, modals for advanced IIS/App Pool details).
+
+Tailwind CSS → Provides consistent, responsive, and modern styling.
+
+Vite → Development/build tool; fast bundling, hot reload, optimized builds.
+
+Excel/CSV Export (JS utils) → Lets users download results from the UI in Excel/CSV format.
+
+Axios/Fetch (JS API calls) → Communicates with backend FastAPI endpoints.
+
+👉 Role: Presents all data in a clean, unified interface with filtering, progress updates, and export options for managers/ops teams.
+
+Backend (API Layer)
+
+FastAPI (Python) → Core API server handling requests from React frontend. Defines endpoints (/api/run_action, /api/server/test_auth, etc.).
+
+Pydantic → Validates request/response schemas (ensures UI ↔ API contracts are stable).
+
+Uvicorn → ASGI server running the FastAPI app.
+
+Subprocess/pywinrm → Executes PowerShell scripts on remote Windows servers over WinRM.
+
+JSON/CSV handling → Aggregates results and structures them for UI and exports.
+
+👉 Role: Orchestrates actions requested from UI, validates input, runs PowerShell remotely, consolidates results, and streams back to frontend.
