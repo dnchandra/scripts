@@ -1,0 +1,31 @@
+// Start a logical step for reporting
+Catchpoint.startStep('Navigate to Login');
+
+// Go to your website's login page
+await page.goto('https://example.lab', { waitUntil: 'domcontentloaded' });
+
+// Access credentials from Library > Credentials
+// Replace 'MercuryMonitoring' with the exact name of your stored credential
+const username = Catchpoint.username('Monitoring');
+const password = Catchpoint.password('Monitoring');
+
+// Enter credentials
+Catchpoint.startStep('Enter Credentials');
+await page.fill('input[name="userId"]', username);
+await page.fill('input[name="password"]', password);
+
+// Click login
+await page.click('button:has-text("Log In")');
+
+// Verify login
+Catchpoint.startStep('Verify Login');
+// Wait until a dashboard or post-login element appears
+await page.waitForSelector('text=Account Overview', { timeout: 15000 });
+
+// Optional: check URL pattern if dashboard URL is predictable
+// await page.waitForURL('**/dashboard', { timeout: 10000 });
+
+// Optional assertion for visibility of a welcome element
+// await expect(page.locator('.welcome-message')).toBeVisible();
+
+console.log('Login successful!');
