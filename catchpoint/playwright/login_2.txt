@@ -1,0 +1,22 @@
+// Step 1: Navigate to login page
+await page.goto('https://example.lab', { waitUntil: 'domcontentloaded' });
+
+// Step 2: Handle "Accept All Cookies" popup if it appears
+const cookieBtn = page.locator('button:has-text("Accept All Cookies")');
+if (await cookieBtn.count() > 0) {
+  await cookieBtn.click();
+}
+
+// Step 3: Enter credentials (from Library auto-injected variables)
+await page.fill('input[name="userId"]', __USERNAME);
+await page.fill('input[name="password"]', __PASSWORD);
+
+// Step 4: Click login button
+await page.click('button:has-text("Log In")');
+
+// Step 5: Wait for something that proves login worked
+// Example: maybe a logout link or account overview panel
+await page.waitForSelector('text=Account Overview', { timeout: 15000 });
+
+// Optional: Capture screenshot for debugging
+await page.screenshot({ path: 'after_login.png' });
