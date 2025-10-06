@@ -29,3 +29,37 @@ await page.waitForSelector('text=Account Overview', { timeout: 15000 });
 // await expect(page.locator('.welcome-message')).toBeVisible();
 
 console.log('Login successful!');
+
+
+++++++++++++++++++++
+
+const { test, expect } = require('@playwright/test');  // Or import for TypeScript
+
+test('Monitor Website Login', async ({ page }) => {
+  // Start a logical step for reporting
+  Catchpoint.startStep('Navigate to Login');
+
+  // Go to your website's login page
+  await page.goto('https://yourwebsite.com/login');
+
+  // Access credentials from Library > Credentials (replace 'my_website_login' with your credential ID)
+  const username = Catchpoint.username('my_website_login');
+  const password = Catchpoint.password('my_website_login');
+
+  // Fill login form (adapt selectors to your site)
+  Catchpoint.startStep('Enter Credentials');
+  await page.fill('#username', username);  // Or use page.getByLabel('Username')
+  await page.fill('#password', password);  // Or use page.getByLabel('Password')
+  await page.click('button[type="submit"]');
+
+  // Wait for login response and verify
+  Catchpoint.startStep('Verify Login');
+  await page.waitForURL('**/dashboard', { timeout: 10000 });  // Adjust URL pattern
+  await expect(page).toHaveURL(/dashboard/);  // Assertion for success
+  await expect(page.locator('.welcome-message')).toBeVisible();  // Optional: Check for a post-login element
+
+  // Store a global variable for potential use in chained tests
+  Catchpoint.storeGlobalVariable('userSession', 'logged_in');
+
+  console.log('Login successful!');
+});
