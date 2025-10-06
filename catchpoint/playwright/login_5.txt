@@ -1,0 +1,35 @@
+// Step 1: Navigate to login page
+Catchpoint.startStep('Navigate to Login');
+await page.goto('https://example.lab/', { waitUntil: 'domcontentloaded' });
+
+// Step 2: Handle cookies
+Catchpoint.startStep('Accept Cookies');
+const cookieBtn = page.locator('button:has-text("Accept All Optional Cookies")');
+if (await cookieBtn.count() > 0) {
+  await cookieBtn.click();
+}
+
+// Step 3: Wait for login form
+await page.waitForSelector('input[name="userId"]', { timeout: 15000 });
+await page.waitForSelector('input[type="password"]', { timeout: 15000 });
+
+// Step 4: Pull credentials from Catchpoint Library
+const username = Catchpoint.username('Monitoring');
+const password = Catchpoint.password('Monitoring');
+
+// Step 5: Enter credentials
+Catchpoint.startStep('Enter Credentials');
+await page.fill('input[name="userId"]', username);
+await page.fill('input[type="password"]', password);
+
+// Step 6: Click login
+Catchpoint.startStep('Click Login');
+await page.click('button:has-text("Log In"), input[value="Log In"]');
+
+// Step 7: Verify login
+Catchpoint.startStep('Verify Login');
+// Adjust this selector to something *only visible after login*
+await page.waitForSelector('text=Home', { timeout: 15000 });
+
+// Optional: log to console
+console.log('Login successful!');
