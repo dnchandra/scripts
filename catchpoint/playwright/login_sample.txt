@@ -1,29 +1,29 @@
 import { test, expect } from '@playwright/test';
 
-test('Login via credential library + accept cookies', async ({ page }) => {
-  // Retrieve credentials from Catchpoint’s library
-  const username = getSecret("example_User", "username");
-  const password = getSecret("example_User", "password");
+test('Login and handle cookies on example.lab', async ({ page }) => {
+  // Get credentials securely from Catchpoint Library
+  const username = getSecret("example_user", "username");
+  const password = getSecret("example_user", "password");
 
-  // Navigate to the site
+  // Step 1: Navigate to login page
   await page.goto('https://www.example.lab', { waitUntil: 'domcontentloaded' });
 
-  // Handle “Accept All Cookies” if it appears
+  // Step 2: Handle "Accept All Cookies" popup if it appears
   const cookieBtn = page.locator('button:has-text("Accept All Cookies")');
   if (await cookieBtn.count() > 0) {
     await cookieBtn.click();
   }
 
-  // Fill in login fields
+  // Step 3: Enter credentials
   await page.fill('#username', username);
   await page.fill('#password', password);
 
-  // Click login / submit
+  // Step 4: Click login button
   await page.click('#loginButton');
 
-  // Wait and assert a post-login element is visible
+  // Step 5: Wait for an element that indicates successful login
   await expect(page.locator('#dashboard')).toBeVisible({ timeout: 15000 });
 
-  // Optionally screenshot for debugging
+  // Optional: Capture screenshot for debugging
   await page.screenshot({ path: 'after_login.png' });
 });
