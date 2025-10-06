@@ -1,0 +1,70 @@
+// --- Diagnostic / helper block ---
+Catchpoint.startStep('Diagnose Injection');
+
+console.log("Global scope keys:", Object.keys(globalThis).slice(0, 50));
+console.log("Catchpoint object exists:", typeof Catchpoint !== 'undefined');
+if (typeof Catchpoint !== 'undefined') {
+  console.log("Catchpoint.username:", typeof Catchpoint.username);
+  console.log("Catchpoint.password:", typeof Catchpoint.password);
+}
+
+// Try to get credentials in various ways
+let username, password;
+try {
+  if (typeof Catchpoint !== 'undefined' && typeof Catchpoint.username === 'function') {
+    username = Catchpoint.username('Monitoring');
+    password = Catchpoint.password('Monitoring');
+    console.log("Used Catchpoint.username/password approach");
+  }
+} catch (e) {
+  console.log("Catchpoint.username approach failed:", e);
+}
+
+if (username === undefined) {
+  // fallback if some other API is present
+  if (typeof getSecret === 'function') {
+    try {
+      username = getSecret('MMonitoring', 'username');
+      password = getSecret('Monitoring', 'password');
+      console.log("Used getSecret fallback");
+    } catch (e) {
+      console.log("getSecret fallback failed:", e);
+    }
+  }
+}
+
+// You can add more fallback tries if you know other APIs your version might support
+
+console.log("Resolved username:", username);
+console.log("Resolved password:", password);
+
+// If still undefined, throw so you see error early
+if (!username || !password) {
+  throw new Error("Credentials (username/password) are undefined in test runtime");
+}
+
+// --- Real transaction script ---
+Catchpoint.startStep('Navigate to Login');
+await page.goto('https://example.lab/', { waitUntil: 'domcontentloaded' });
+
+Catchpoint.startStep('Accept Cookies');
+const cookieBtn = page.locator('button:has-text("Accept All Optional Cookies")');
+if (await cookieBtn.count() > 0) {
+  await cookieBtn.click();
+}
+
+Catchpoint.startStep('Wait Login Form');
+await page.waitForSelector('input[name="userId"]', { timeout: 15000 });
+await page.waitForSelector('input[type="password"]', { timeout: 15000 });
+
+Catchpoint.startStep('Enter Credentials');
+await page.fill('input[name="userId"]', username);
+await page.fill('input[type="password"]', password);
+
+Catchpoint.startStep('Click Login');
+await page.click('button:has-text("Log In"), input[value="Log In"]');
+
+Catchpoint.startStep('Verify Login');
+await page.waitForSelector('text=Home, Account Overview, Dashboard', { timeout: 15000 });
+
+console.log("Login successful!");
