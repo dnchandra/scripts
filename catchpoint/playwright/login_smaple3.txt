@@ -1,0 +1,25 @@
+// Step 1: Get credentials from Library (type: Login)
+const creds = await getLogin("Monitoring");
+
+// Step 2: Navigate to login page
+await page.goto('https://example.lab', { waitUntil: 'domcontentloaded' });
+
+// Step 3: Handle "Accept All Cookies" popup if it appears
+const cookieBtn = page.locator('button:has-text("Accept All Cookies")');
+if (await cookieBtn.count() > 0) {
+  await cookieBtn.click();
+}
+
+// Step 4: Enter credentials
+await page.fill('input[name="userId"]', creds.username);
+await page.fill('input[name="password"]', creds.password);
+
+// Step 5: Click login button
+await page.click('button:has-text("Log In")');
+
+// Step 6: Wait for something unique after login
+// (update selector with a real post-login element)
+await page.waitForSelector('text=Account Overview', { timeout: 15000 });
+
+// Optional: Screenshot
+await page.screenshot({ path: 'after_login.png' });
