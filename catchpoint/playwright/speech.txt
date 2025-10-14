@@ -1,0 +1,94 @@
+Good morning everyone,
+
+Today, I’ll be walking you through our in-house solution — ServerOps Studio, a unified platform built to simplify Windows server operations and significantly cut down manual effort.
+
+Background
+
+In our Sales & Research platform, we manage a huge infrastructure — more than 1,500 servers across 10 data centers and 41 AITs.
+Traditionally, admins had to work across multiple tools — Event Viewer, IIS Manager, Services Console, Patch Manager, and Certificate Store — just to perform routine checks or troubleshooting.
+
+This resulted in:
+
+Fragmented workflows
+
+Time-consuming manual checks
+
+Delayed issue resolution, and
+
+High skill dependency for new team members.
+
+We realized we needed a centralized automation platform — something that could bring together all these operational tasks under a single interface.
+
+That’s where ServerOps Studio comes in.
+
+Technical Architecture
+
+If you look at the architecture slide — the design is built for simplicity, speed, and scalability.
+
+On the frontend, we used React and Tailwind, providing a modern, responsive UI for users.
+
+The backend handles orchestration and logic.
+
+We use WinRM-based PowerShell collectors that connect to all Windows servers to pull data on IIS, Services, Patches, Certificates, and Logs.
+
+The results are then consolidated and exported for reporting.
+
+We also maintain an Inventory & Config module, which stores environment details, making it easy to reuse configurations across multiple data centers.
+
+This setup allows us to validate hundreds of servers in parallel — with a single click — eliminating the need for multiple consoles or RDP sessions.
+
+Tool Capabilities
+
+Now, coming to the tool itself — ServerOps Studio provides an end-to-end operational toolkit, all from one dashboard:
+
+Server Health Info – OS version, uptime, stopped services, IIS status
+
+Deployment Verification – file change detection, config validation, download inspection
+
+IIS Management – website and app pool details, export options
+
+Windows Services – service status, startup type, logon accounts
+
+Event Log Analysis – filtered log search with export capabilities
+
+Certificate Management – SSL expiry tracking, issuer details
+
+Patch & Software Inventory – compliance and post-patching validation
+
+Registry, DNS, Remote Connectivity, and GAC Tools – for advanced diagnostics and export
+
+In short, everything an admin needs for post-deployment validation, troubleshooting, or readiness checks is available in one integrated platform.
+
+Efficiency & Impact
+
+Now let’s look at the real impact — how much time we’ve been able to save.
+
+Based on actual measurements, here’s what we observed:
+
+IIS and Services checks that earlier took 50–60 minutes now complete in under 30 seconds.
+
+Patch validation and software inventory dropped from 70–90 minutes to 1–2 minutes.
+
+Event log reviews, which used to take over 100 minutes, now finish in 2–3 minutes.
+
+Even deployment verifications and registry queries now complete within seconds.
+
+Across multiple operations, we’ve achieved efficiency gains of 50–95 minutes per 10 servers, which translates to 95–99% time reduction in repetitive operational checks.
+
+This means tasks that earlier took 8–12 hours now finish in minutes or even seconds — giving teams back valuable engineering time for more critical work.
+
+Summary
+
+To summarize:
+
+ServerOps Studio unifies server operations into a single pane of glass.
+
+It delivers faster validation, automated monitoring, and consistent reporting.
+
+It reduces skill dependency, enhances reliability, and improves overall operational efficiency across all AIT environments.
+
+Moving forward, we plan to extend this framework with Linux support, API-driven integrations, and analytics dashboards to bring even deeper insights into our infrastructure.
+
+In short, ServerOps Studio transforms the way we manage servers — from manual and fragmented to automated, scalable, and standardized.
+
+Thank you.
