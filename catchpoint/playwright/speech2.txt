@@ -1,0 +1,60 @@
+Good evening everyone,
+
+Today, I’ll be walking you through our in-house solution — WinServerOps Studio, a unified platform built to simplify Windows server operations and significantly reduce manual effort.
+
+In our Sales & Research platform, we manage over 1,500 servers across 10 data centers and 41 AITs.
+Traditionally, APSE and Server Administrators had to use multiple tools such as Event Viewer, IIS Manager, Services Console, and Certificate Store for routine health checks, troubleshooting, post-deployment validations, ARC exercises, or data center isolation activities.
+
+This approach led to fragmented workflows, time-consuming manual checks, delayed issue resolution, and high skill dependency for new team members.
+
+We clearly needed a centralized automation platform to bring all these activities together — and that’s where WinServerOps Studio comes in.
+
+Tool Capabilities
+
+Now, coming to the tool capabilities — due to time constraints, I’ll highlight a few key features this platform provides.
+
+WinServerOps Studio offers a single dashboard for end-to-end operational tasks, including:
+
+Server Health Info – provides uptime, OS version, and stopped services details.
+
+Deployment Verification – validates file changes and configurations.
+
+IIS Management – displays website, app pool details, and advanced settings.
+
+Windows Services & Event Logs – allows checking service status, start/stop operations, and analyzing event logs directly from the same UI.
+
+Certificate Management – shows issuer and expiry information.
+
+Plus, advanced tools for Registry, DNS, Remote Connectivity, and GAC assemblies.
+
+In short, it provides everything needed for post-deployment validation, troubleshooting, and readiness checks — all in one place.
+
+Impact & Savings
+
+Now, let’s look at the real impact — how much time we’ve been able to save.
+Based on actual measurements:
+
+IIS and Service checks reduced from 50–60 minutes to under 30 seconds.
+
+OS patching or NPT remediation validations dropped from 90 minutes to 1–2 minutes.
+
+Event log reviews now take just 2–3 minutes instead of over 100 minutes.
+
+Across multiple operations, we’ve achieved efficiency gains of 50–95 minutes per 10 servers, resulting in 95–99% faster execution.
+Essentially, tasks that earlier took 8–12 hours now complete in minutes or even seconds, freeing up valuable engineering time for more strategic work.
+
+Technical Architecture
+
+If you look at the architecture — the design is built for simplicity, speed, and scalability.
+It’s a self-serve tool, built with a React-Tailwind frontend, WinRM-based PowerShell collectors, and a scalable backend, capable of validating hundreds of servers in parallel with a single click.
+
+Summary
+
+To summarize — WinServerOps Studio unifies server operations into a single, automated, and scalable platform.
+It enhances reliability, reduces manual effort, and standardizes operations across all AIT environments.
+
+Going forward, we plan to extend it with Linux support and API-driven integrations for broader adoption.
+
+In short, WinServerOps Studio transforms our server management from manual and fragmented to automated and intelligent.
+
+Thank you.
