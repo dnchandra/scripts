@@ -1,224 +1,123 @@
-// MARKETS - Robust Puppeteer login script for Catchpoint
-// Paste into Catchpoint as a Puppeteer script (uses Catchpoint.username()/password())
+// Catchpoint Puppeteer Script for Mercury Portal Login
+// Uses Catchpoint credential store: MercuryCatchpoint
+// Robust dynamic handling of login + cookies + verification + screenshot
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-Catchpoint.startStep('Navigate to Base URL');
+Catchpoint.startStep('Navigate to Login Page');
 await page.goto('https://markets-pp.ml.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
-
-// small pause for redirect/popups to appear
-await sleep(500);
 await sleep(2000);
+console.log('Initial URL:', page.url());
 
-// detect redirect / final URL
+// Detect redirect if any
 let finalUrl = page.url();
 const detectUntil = Date.now() + 10000;
 while (Date.now() < detectUntil) {
   const cur = page.url();
   if (cur !== finalUrl) {
-    console.log('Redirect observed:', finalUrl, '->', cur);
+    console.log('Redirect detected:', finalUrl, '→', cur);
     finalUrl = cur;
   }
-  if (cur.includes('fedsso') || (await page.$('input[placeholder="Enter your user ID"], input[name="username"], input[type="text"]'))) break;
+  if (cur.indexOf('fedsso') > -1 || (await page.$('input[placeholder="Enter your user ID"]'))) break;
   await sleep(300);
 }
 console.log('Final observed URL:', finalUrl);
 
-// helper: robust click (tries native click, then JS click)
-async function safeClick(elHandle) {
+// STEP 2 — Accept Cookies (if popup appears)
+Catchpoint.startStep('Accept Cookies');
+async function safeClick(el) {
   try {
-    await elHandle.click();
+    await el.click();
     return true;
-  } catch (e1) {
+  } catch (e) {
     try {
-      await elHandle.evaluate((el) => el && el.click());
+      await el.evaluate((n) => n && n.click());
       return true;
-    } catch (e2) {
+    } catch {
       return false;
     }
   }
 }
 
-// STEP: Accept cookies — try a list of selectors (top-level); return true if clicked
-Catchpoint.startStep('Accept Cookies (robust)');
-async function acceptCookies(timeoutMs = 10000) {
-  const cookieCssCandidates = [
+async function acceptCookies() {
+  const selectors = [
     '#onetrust-accept-btn-handler',
     'button[id*="onetrust"]',
-    'button:contains("Accept All Optional Cookies")', // will be handled below via text match
-    'button:contains("Accept All Cookies")',
-    'button:contains("Accept")',
-    'button[aria-label*="accept"]'
+    'button:has-text("Accept")',
+    'button:has-text("Agree")'
   ];
-  // Try direct CSS based options first
-  for (const sel of ['#onetrust-accept-btn-handler', 'button[id*="onetrust"]', 'button[aria-label*="accept"]']) {
-    const el = await page.$(sel);
+  for (const s of selectors) {
+    const el = await page.$(s);
     if (el) {
-      console.log('Found cookie button via selector:', sel);
-      const ok = await safeClick(el);
-      if (ok) {
-        console.log('Clicked cookie button:', sel);
+      const clicked = await safeClick(el);
+      if (clicked) {
+        console.log('Cookie popup handled:', s);
         return true;
       }
     }
   }
-
-  // If not found by CSS, try text-match scan via evaluate (works across versions)
-  const textCandidates = ['Accept All Optional Cookies', 'Accept All Cookies', 'Accept', 'Agree'];
-  for (const txt of textCandidates) {
-    // search visible buttons/links containing the candidate text (case-insensitive)
-    const clicked = await page.evaluate(async (searchText) => {
-      const norm = (s) => s && s.replace(/\s+/g, ' ').trim().toLowerCase();
-      const nodes = Array.from(document.querySelectorAll('button, a, input[type="button"], input[type="submit"]'));
-      for (const n of nodes) {
-        try {
-          const text = norm(n.innerText || n.value || '');
-          if (!text) continue;
-          if (text.indexOf(searchText.toLowerCase()) !== -1) {
-            // ensure visible
-            const rect = n.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-              n.click();
-              return { clicked: true, selectorText: searchText };
-            }
-          }
-        } catch (e) {}
-      }
-      return { clicked: false };
-    }, txt);
-    if (clicked && clicked.clicked) {
-      console.log('Clicked cookie button by text match:', txt);
-      return true;
-    }
-  }
-
-  // try inside frames if any (note: your debug said frames found: 0, but keep for safety)
-  const frames = page.frames ? page.frames() : [];
-  for (const f of frames) {
-    try {
-      const el = await f.$ && (await f.$('#onetrust-accept-btn-handler'));
-      if (el) {
-        // use evaluate in frame context
-        await f.evaluate((sel) => {
-          const e = document.querySelector(sel);
-          e && e.click();
-        }, '#onetrust-accept-btn-handler');
-        console.log('Clicked cookie in iframe');
-        return true;
-      }
-    } catch (err) {
-      // ignore cross-origin frames
-    }
-  }
-
-  console.log('No cookie accept button clicked (none found)');
+  console.log('No cookie popup found.');
   return false;
 }
+await acceptCookies();
 
-await acceptCookies(8000);
-
-// STEP: Wait for login inputs to appear (use multiple selectors)
-Catchpoint.startStep('Wait for Login Form');
+// STEP 3 — Wait for login inputs
+Catchpoint.startStep('Wait for Login Inputs');
 const usernameSelectors = [
   'input[placeholder="Enter your user ID"]',
-  'input[placeholder="User ID"]',
   'input[name="username"]',
   'input[id*="user"]',
   'input[type="text"]'
 ];
 const passwordSelectors = [
   'input[placeholder="Enter your password"]',
-  'input[placeholder="Password"]',
   'input[name="password"]',
   'input[id*="pass"]',
   'input[type="password"]'
 ];
 
-async function findFirstVisible(selectors) {
-  for (const sel of selectors) {
-    const el = await page.$(sel);
+async function findVisible(selectors) {
+  for (const s of selectors) {
+    const el = await page.$(s);
     if (el) {
       const box = await el.boundingBox();
-      if (box && box.width > 0 && box.height > 0) return { el, sel };
+      if (box && box.width > 0 && box.height > 0) return { el, sel: s };
     }
   }
-  // fallback: try any input of given type
   return null;
 }
 
-// Wait up to 20s for username and password inputs to appear
+let foundUser = null, foundPass = null;
 const waitUntil = Date.now() + 20000;
-let usernameEl = null, passwordEl = null;
 while (Date.now() < waitUntil) {
-  if (!usernameEl) {
-    const found = await findFirstVisible(usernameSelectors);
-    if (found) usernameEl = found.el;
-  }
-  if (!passwordEl) {
-    const found = await findFirstVisible(passwordSelectors);
-    if (found) passwordEl = found.el;
-  }
-  if (usernameEl && passwordEl) break;
+  if (!foundUser) foundUser = await findVisible(usernameSelectors);
+  if (!foundPass) foundPass = await findVisible(passwordSelectors);
+  if (foundUser && foundPass) break;
   await sleep(300);
 }
-if (!usernameEl || !passwordEl) {
-  console.error('Login inputs not found. page.url=', page.url());
-  await page.screenshot({ path: `login_inputs_missing_${Date.now()}.png`, fullPage: true });
-  throw new Error('Login inputs not found');
-}
-console.log('Found username & password inputs.');
 
-// STEP: Fill credentials using Catchpoint secure store
-Catchpoint.startStep('Get Credentials');
+if (!foundUser || !foundPass) {
+  console.error('Login inputs not found.');
+  await page.screenshot({ path: 'login_inputs_missing.png', fullPage: true });
+  throw new Error('Login form not found');
+}
+console.log('Found login inputs:', foundUser.sel, foundPass.sel);
+
+// STEP 4 — Retrieve credentials
+Catchpoint.startStep('Retrieve Credentials');
 const username = Catchpoint.username('MercuryCatchpoint');
 const password = Catchpoint.password('MercuryCatchpoint');
 
+// STEP 5 — Enter credentials
 Catchpoint.startStep('Enter Credentials');
-async function fillInput(elHandle, value) {
-  try {
-    await elHandle.focus();
-    // clear (if possible)
-    await page.evaluate((el) => { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); }, elHandle);
-    // type slowly to mimic human and avoid JS race
-    for (const ch of value.split('')) {
-      await page.keyboard.type(ch);
-      await sleep(20);
-    }
-    // ensure events fired
-    await page.evaluate((el, v) => {
-      el.value = v;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    }, elHandle, value);
-    await sleep(200);
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
+await foundUser.el.click({ clickCount: 3 });
+await foundUser.el.type(username, { delay: 50 });
+await foundPass.el.click({ clickCount: 3 });
+await foundPass.el.type(password, { delay: 50 });
 
-// Because we used page.keyboard typing, ensure cursor is in the correct field each time.
-// So find fresh handles by selectors before typing
-const usernameSelUsed = (await findFirstVisible(usernameSelectors)).sel;
-const passwordSelUsed = (await findFirstVisible(passwordSelectors)).sel;
-
-const usernameHandle = await page.$(usernameSelUsed);
-await usernameHandle.focus();
-await fillInput(usernameHandle, username);
-
-// move to password
-const passwordHandle = await page.$(passwordSelUsed);
-await passwordHandle.focus();
-await fillInput(passwordHandle, password);
-
-console.log('Credentials entered.');
-
-// STEP: Safe click on login button (re-query fresh handle)
+// STEP 6 — Click Login
 Catchpoint.startStep('Click Login');
-const startTime = Date.now();
-
-// Candidate button selectors
-const loginButtonSelectors = [
+const loginSelectors = [
   'button[type="submit"]',
   'button[name="login"]',
   'button[id*="login"]',
@@ -226,114 +125,64 @@ const loginButtonSelectors = [
   'input[type="submit"]'
 ];
 
-let loginBtn = null;
-for (const sel of loginButtonSelectors) {
-  const el = await page.$(sel);
+let loginButton = null;
+for (const s of loginSelectors) {
+  const el = await page.$(s);
   if (el) {
-    // ensure visible
     const box = await el.boundingBox();
     if (box && box.width > 0 && box.height > 0) {
-      loginBtn = el;
-      console.log('Login button found via selector:', sel);
+      loginButton = el;
+      console.log('Login button found:', s);
       break;
     }
   }
 }
 
-// If still not found, attempt to find by visible text (JS within page)
-if (!loginBtn) {
-  const found = await page.evaluateHandle(() => {
-    const norm = s => s && s.replace(/\s+/g,' ').trim().toLowerCase();
-    const nodes = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
-    for (const n of nodes) {
-      const t = norm(n.innerText || n.value || '');
-      if (!t) continue;
-      if (t.includes('log in') || t === 'login' || t.includes('sign in')) return n;
-    }
-    return null;
-  });
-  if (found) {
-    loginBtn = found.asElement ? found.asElement() : found;
-  }
-}
-
-if (!loginBtn) {
-  console.warn('Login button not found; will press Enter from password field as fallback.');
-  // press Enter to submit
-  await passwordHandle.press('Enter');
-} else {
-  // scroll into view and try safe click
-  try {
-    await loginBtn.evaluate(el => el.scrollIntoView({ block: 'center' }));
-  } catch {}
-  await sleep(200);
-  const clicked = await safeClick(loginBtn);
+if (loginButton) {
+  await loginButton.evaluate((el) => el.scrollIntoView({ block: 'center' })).catch(() => {});
+  const clicked = await safeClick(loginButton);
   if (!clicked) {
-    // fallback: evaluate click by selector
-    try {
-      await page.evaluate((sel) => {
-        const e = document.querySelector(sel);
-        e && e.click();
-      }, loginButtonSelectors[0]);
-    } catch (e) {
-      console.error('Final fallback click failed:', e && e.message);
-    }
+    console.warn('Click failed, using Enter key.');
+    await foundPass.el.press('Enter');
   }
-}
-
-await sleep(800);
-
-// STEP: Wait for success indicator or URL change
-Catchpoint.startStep('Verify Login');
-const successTimeout = Date.now() + 30000;
-let success = false;
-while (Date.now() < successTimeout) {
-  // check a reliable post-login element if present
-  const foundQuick = await page.$('div.quick-access, [data-testid="home"], nav[role="navigation"]');
-  if (foundQuick) {
-    success = true;
-    break;
-  }
-  // or URL changed away from login/resume path
-  const cur = page.url();
-  if (!cur.includes('login_page') && !cur.includes('resume')) {
-    success = true;
-    break;
-  }
-  await sleep(400);
-}
-
-if (success) {
-  console.log('Login appears successful. Time(ms):', Date.now() - startTime, 'Final URL:', page.url());
-  // optional: screenshot success
-  await page.screenshot({ path: `login_success_${Date.now()}.png`, fullPage: true });
 } else {
-  console.error('Login not confirmed within timeout. Capturing debug artifacts.');
-  await page.screenshot({ path: `login_failure_full_${Date.now()}.png`, fullPage: true });
-  // capture small HTML snippet around form (if found)
-  const formHtml = await page.evaluate(() => {
-    const f = document.querySelector('form') || document.querySelector('body');
-    return f ? f.outerHTML.slice(0, 2000) : '';
-  }).catch(() => '');
-  console.log('Form snippet (truncated):', formHtml);
-  throw new Error('Login not confirmed');
+  console.warn('Login button not found, pressing Enter fallback.');
+  await foundPass.el.press('Enter');
 }
 
-// optional: navigate to FX TCA Order Monitor if present
-Catchpoint.startStep('Navigate to FX TCA');
+// STEP 7 — Verify Login Success
+Catchpoint.startStep('Verify Login');
+let success = false;
 try {
-  const fxMenu = await page.$x("//a[contains(normalize-space(.), 'FX TCA Order Monitor')]");
-  if (fxMenu && fxMenu.length > 0) {
-    await fxMenu[0].evaluate(el => el.scrollIntoView({ block: 'center' }));
-    await sleep(200);
-    try { await fxMenu[0].click(); } catch { await fxMenu[0].evaluate(el => el.click()); }
+  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 });
+  success = true;
+} catch {
+  // fallback polling for home element or URL change
+  const endPoll = Date.now() + 30000;
+  while (Date.now() < endPoll && !success) {
+    const quick = await page.$('div.quick-access, [data-testid="home"], nav[role="navigation"]');
+    if (quick) {
+      success = true;
+      console.log('Detected post-login element.');
+      break;
+    }
+    const cur = page.url();
+    if (!cur.includes('login_page') && !cur.includes('resume')) {
+      success = true;
+      console.log('URL changed away from login page:', cur);
+      break;
+    }
     await sleep(500);
-    console.log('Clicked FX TCA');
-  } else {
-    console.log('FX TCA menu item not visible');
   }
-} catch (e) {
-  console.warn('FX nav error:', e && e.message);
 }
 
-console.log('Script finished.');
+const shotName = success ? `login_success_${Date.now()}.png` : `login_failure_${Date.now()}.png`;
+await page.screenshot({ path: shotName, fullPage: true });
+console.log('Saved screenshot:', shotName);
+
+if (!success) {
+  console.error('Login not confirmed; check screenshot.');
+  throw new Error('Login verification failed');
+}
+
+console.log('✅ Login successful, home page reached.');
