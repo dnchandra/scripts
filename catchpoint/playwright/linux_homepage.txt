@@ -1,0 +1,196 @@
+// markets_local_test_wait_playwright_linux.js
+// Playwright login probe tailored for RHEL/Linux environments.
+
+const { chromium } = require('playwright');
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const flags = new Set(process.argv.slice(2));
+const headed = flags.has('--headed');
+const launchOptions = {
+  headless: !headed,
+  slowMo: headed ? 40 : 0,
+  args: ['--no-sandbox', '--disable-setuid-sandbox']
+};
+
+if (headed) launchOptions.args.unshift('--start-maximized');
+
+(async () => {
+  const browser = await chromium.launch(launchOptions);
+  const context = await browser.newContext(headed ? { viewport: null } : {});
+  const page = await context.newPage();
+
+  try {
+    console.log('Navigating to https://markets-pp.ml.com ...');
+    await page.goto('https://markets-pp.ml.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await sleep(2000);
+
+    console.log('Final observed URL:', page.url());
+
+    // Accept cookie banner if present (simple)
+    try {
+      const cookieBtn = await page.$('#onetrust-accept-btn-handler');
+      if (cookieBtn) {
+        await cookieBtn.click().catch(() => cookieBtn.evaluate(el => el && el.click()));
+        console.log('Clicked cookie banner');
+      } else {
+        console.log('No cookie banner found');
+      }
+    } catch (e) {
+      console.log('Cookie click error (ignored):', e.message);
+    }
+
+    const usernameSelectors = [
+      'input[placeholder="Enter your user ID"]',
+      'input[name="username"]',
+      'input[id*="user"]',
+      'input[type="text"]'
+    ];
+    const passwordSelectors = [
+      'input[placeholder="Enter your password"]',
+      'input[name="password"]',
+      'input[id*="pass"]',
+      'input[type="password"]'
+    ];
+
+    async function findVisible(selectors) {
+      for (const s of selectors) {
+        const el = await page.$(s);
+        if (el) {
+          const box = await el.boundingBox();
+          if (box && box.width > 0 && box.height > 0) return { el, sel: s };
+        }
+      }
+      return null;
+    }
+
+    console.log('Waiting for login inputs...');
+    let foundUser = null;
+    let foundPass = null;
+    const waitUntil = Date.now() + 20000;
+    while (Date.now() < waitUntil) {
+      if (!foundUser) foundUser = await findVisible(usernameSelectors);
+      if (!foundPass) foundPass = await findVisible(passwordSelectors);
+      if (foundUser && foundPass) break;
+      await sleep(300);
+    }
+
+    if (!foundUser || !foundPass) {
+      console.error('Login inputs not found; saving screenshot.');
+      await page.screenshot({ path: 'login_inputs_missing.png', fullPage: true });
+      return;
+    }
+
+    const username = 'username';
+    const password = 'password';
+
+    console.log('Filling credentials...');
+    await foundUser.el.click({ clickCount: 3 });
+    await foundUser.el.type(username, { delay: 60 });
+
+    await foundPass.el.click({ clickCount: 3 });
+    await foundPass.el.type(password, { delay: 60 });
+
+    async function pickVisible(locator) {
+      const count = await locator.count();
+      for (let i = 0; i < count; i += 1) {
+        const candidate = locator.nth(i);
+        if (await candidate.isVisible()) return candidate;
+      }
+      return null;
+    }
+
+    async function findLoginControl() {
+      const namePatterns = [/log\s*in/i, /sign\s*in/i];
+      for (const pattern of namePatterns) {
+        const byRole = await pickVisible(page.getByRole('button', { name: pattern }));
+        if (byRole) return { control: byRole, source: `role=button name~${pattern}` };
+      }
+
+      for (const pattern of namePatterns) {
+        const asLink = await pickVisible(page.getByRole('link', { name: pattern }));
+        if (asLink) return { control: asLink, source: `role=link name~${pattern}` };
+      }
+
+      const loginSelectors = [
+        'button[type="submit"]',
+        'button[name="login"]',
+        'button[id*="login"]',
+        'button[class*="login"]',
+        'input[type="submit"]'
+      ];
+
+      for (const selector of loginSelectors) {
+        const candidate = await pickVisible(page.locator(selector));
+        if (candidate) return { control: candidate, source: selector };
+      }
+
+      return null;
+    }
+
+    console.log('Clicking login button...');
+    const loginControl = await findLoginControl();
+    let navPromise;
+    try {
+      navPromise = page.waitForNavigation({ waitUntil: 'networkidle', timeout: 20000 });
+    } catch (e) {
+      navPromise = null;
+    }
+
+    if (loginControl) {
+      console.log('Found login button via:', loginControl.source);
+      await loginControl.control.scrollIntoViewIfNeeded().catch(() => {});
+      try {
+        await loginControl.control.click({ timeout: 5000 });
+      } catch (clickError) {
+        console.warn('Click failed, using keyboard Enter fallback:', clickError.message);
+        await foundPass.el.press('Enter');
+      }
+    } else {
+      console.warn('Login button not found, pressing Enter as fallback.');
+      await foundPass.el.press('Enter');
+    }
+
+    let success = false;
+    if (navPromise) {
+      try {
+        await navPromise;
+        success = true;
+        console.log('Navigation detected after login (waitForNavigation resolved).');
+      } catch (e) {
+        console.log('waitForNavigation timed out or error:', e.message);
+      }
+    }
+
+    const end = Date.now() + 30000;
+    while (Date.now() < end && !success) {
+      const quick = await page.$('div.quick-access, [data-testid="home"], nav[role="navigation"]');
+      if (quick) {
+        success = true;
+        console.log('Detected post-login element (quick-access or home).');
+        break;
+      }
+      const cur = page.url();
+      if (!cur.includes('login_page') && !cur.includes('resume')) {
+        success = true;
+        console.log('URL changed away from login/resume:', cur);
+        break;
+      }
+      await sleep(500);
+    }
+
+    if (success) {
+      console.log('Login appears successful. Saving success screenshot.');
+      await page.screenshot({ path: `login_success_${Date.now()}.png`, fullPage: true });
+    } else {
+      console.error('Login not confirmed within timeout. Saving failure screenshot.');
+      await page.screenshot({ path: `login_failure_${Date.now()}.png`, fullPage: true });
+    }
+
+    console.log('Final page URL:', page.url());
+  } catch (err) {
+    console.error('Script error:', err);
+    await page.screenshot({ path: `error_${Date.now()}.png`, fullPage: true }).catch(() => {});
+  } finally {
+    await browser.close();
+  }
+})();
