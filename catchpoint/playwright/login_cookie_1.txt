@@ -1,7 +1,7 @@
 
 // STEP 1: Navigate to base URL and detect redirects / SSO
 Catchpoint.startStep('Navigate to Base URL');
-await page.goto('https://test-pp.lab, { waitUntil: 'domcontentloaded' });
+await page.goto('https://markets-pp.ml.com', { waitUntil: 'domcontentloaded' });
 
 // Give short time for redirect triggers to appear
 await page.waitForTimeout(500);
@@ -16,7 +16,7 @@ while (Date.now() < navEnd) {
     finalUrl = cur;
   }
   const loginVisible = await page.locator('input[placeholder="Enter your user ID"]').count() > 0;
-  const ssoDetected = finalUrl.includes('testsso-pp.lab') || finalUrl.includes('fedsso');
+  const ssoDetected = finalUrl.includes('fedsso-pp.ml.com') || finalUrl.includes('fedsso');
   if (loginVisible || ssoDetected) break;
   await page.waitForTimeout(300);
 }
@@ -73,7 +73,7 @@ await page.getByRole('button', { name: /login/i }).click({ timeout: 10000 });
 
 // STEP 7: Wait for successful landing or Quick Access element
 Catchpoint.startStep('Verify Login');
-await page.waitForURL('https://test-pp.lab/**', { timeout: 30000 });
+await page.waitForURL('https://markets-pp.ml.com/**', { timeout: 30000 });
 const successFound = await page.locator('div.quick-access:has-text("Quick Access")').count() > 0;
 if (successFound) {
   console.log('✅ Login successful.');
