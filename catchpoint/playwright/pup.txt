@@ -1,7 +1,6 @@
-// ===============================
-// MARKETS LOGIN - PUPPETEER SCRIPT
-// ===============================
 
+
+// STEP 1: Navigate to Base URL
 Catchpoint.startStep('Navigate to Base URL');
 await page.goto('https://markets-pp.ml.com', { waitUntil: 'domcontentloaded' });
 
@@ -25,7 +24,7 @@ console.log('Final URL after navigation:', page.url());
 // STEP 2: Accept cookie popup if it appears
 Catchpoint.startStep('Accept Cookies');
 try {
-  const cookieBtn = await page.$('button#onetrust-accept-btn-handler, button:contains("Accept All Optional Cookies")');
+  const cookieBtn = await page.$('#onetrust-accept-btn-handler');
   if (cookieBtn) {
     await cookieBtn.click();
     console.log('Accepted cookie popup');
@@ -56,15 +55,22 @@ console.log('Credentials filled.');
 // STEP 6: Click Login
 Catchpoint.startStep('Click Login');
 const startTime = Date.now();
-const loginButton =
-  (await page.$('button:has-text("Log In")')) ||
-  (await page.$('button:has-text("Login button")')) ||
-  (await page.$('button[type=submit]'));
+
+// Use multiple fallback selectors (CSS + XPath)
+let loginButton = await page.$('button[type="submit"]');
+if (!loginButton) loginButton = await page.$('button[name="login"]');
+if (!loginButton) {
+  // Try finding by text content (XPath)
+  const btnXPath = "//button[contains(translate(normalize-space(.), 'LOGIN', 'login'), 'login')]";
+  const [btn] = await page.$x(btnXPath);
+  loginButton = btn || null;
+}
+
 if (loginButton) {
   await loginButton.click();
   console.log('Clicked login button.');
 } else {
-  console.warn('Login button not found; pressing Enter instead.');
+  console.warn('Login button not found; pressing Enter.');
   await page.keyboard.press('Enter');
 }
 
@@ -87,9 +93,9 @@ if (success) {
 
 // STEP 8: Navigate to FX TCA Order Monitor (optional)
 Catchpoint.startStep('Navigate to FX TCA');
-const fxMenu = await page.$x("//a[contains(., 'FX TCA Order Monitor')]");
-if (fxMenu.length > 0) {
-  await fxMenu[0].click();
+const [fxMenu] = await page.$x("//a[contains(., 'FX TCA Order Monitor')]");
+if (fxMenu) {
+  await fxMenu.click();
   console.log('Clicked FX TCA Order Monitor.');
 } else {
   console.log('FX TCA Order Monitor link not visible.');
