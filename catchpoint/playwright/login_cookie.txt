@@ -1,0 +1,135 @@
+// Minimal & robust Playwright script for Catchpoint
+// - Handles OneTrust dialog (id: #onetrust-accept-btn-handler) robustly
+// - Minimal steps, visible waits, measures login time
+
+// Step 1: Navigate to login page
+Catchpoint.startStep('Navigate to Login');
+await page.goto('https://markets-pp.ml.com', { waitUntil: 'domcontentloaded' });
+
+// Step 2: Robust cookie handling (top-level + iframe + fallbacks)
+Catchpoint.startStep('Accept Cookies');
+
+async function clickElementWithFallback(locatorOrHandle) {
+  // locatorOrHandle may be a Locator (page.locator) OR an ElementHandle (from frame)
+  try {
+    // If it's a Playwright Locator, it supports scrollIntoViewIfNeeded & click
+    if (typeof locatorOrHandle.scrollIntoViewIfNeeded === 'function') {
+      await locatorOrHandle.scrollIntoViewIfNeeded();
+      await locatorOrHandle.click();
+      return true;
+    }
+  } catch (e) { /* ignore and try other techniques */ }
+
+  try {
+    // Try forcing a click (works when overlay prevents pointer events)
+    await locatorOrHandle.click({ force: true });
+    return true;
+  } catch (e) { /* ignore */ }
+
+  try {
+    // Last resort: evaluate DOM click
+    await locatorOrHandle.evaluate((el) => el && el.click());
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function acceptCookiesIfPresent({ timeoutMs = 12000, pollInterval = 400 } = {}) {
+  const acceptSelector = '#onetrust-accept-btn-handler';
+  const closeSelectors = [
+    'button[aria-label="Close"]',
+    'button.onetrust-close-btn-ui',
+    'button[title="Close"]',
+    'button:has-text("Close")',
+    'button#onetrust-close-btn-handler',
+    'button[aria-label="Dismiss"]'
+  ];
+  const end = Date.now() + timeoutMs;
+
+  while (Date.now() < end) {
+    // 1) Top-level page
+    const topAccept = page.locator(acceptSelector);
+    if (await topAccept.count() > 0 && await topAccept.isVisible()) {
+      const ok = await clickElementWithFallback(topAccept);
+      if (ok) {
+        console.log('Cookie: clicked Accept (top-level)');
+        return true;
+      }
+    }
+
+    // 2) Search frames (popup might be in iframe)
+    for (const f of page.frames()) {
+      try {
+        const frameAccept = f.locator ? f.locator(acceptSelector) : null;
+        if (frameAccept && await frameAccept.count() > 0 && await frameAccept.isVisible()) {
+          const ok = await clickElementWithFallback(frameAccept);
+          if (ok) {
+            console.log('Cookie: clicked Accept (iframe)');
+            return true;
+          }
+        }
+      } catch (err) {
+        // ignore cross-origin/frame access issues
+      }
+    }
+
+    // 3) Try close button(s) if Accept not available
+    for (const cs of closeSelectors) {
+      const closeTop = page.locator(cs);
+      if (await closeTop.count() > 0 && await closeTop.isVisible()) {
+        const ok = await clickElementWithFallback(closeTop);
+        if (ok) {
+          console.log('Cookie: closed dialog via Close/X (top-level)');
+          return false;
+        }
+      }
+      for (const f of page.frames()) {
+        try {
+          const closeFrame = f.locator ? f.locator(cs) : null;
+          if (closeFrame && await closeFrame.count() > 0 && await closeFrame.isVisible()) {
+            const ok = await clickElementWithFallback(closeFrame);
+            if (ok) {
+              console.log('Cookie: closed dialog via Close/X (iframe)');
+              return false;
+            }
+          }
+        } catch (err) { }
+      }
+    }
+
+    // 4) Press Escape (some modals listen for ESC)
+    await page.keyboard.press('Escape');
+
+    // wait then retry
+    await page.waitForTimeout(pollInterval);
+  }
+
+  console.log('Cookie: no dialog found within timeout');
+  return false;
+}
+
+await acceptCookiesIfPresent({ timeoutMs: 12000 });
+
+// Step 3: Wait for login inputs (only visible state)
+Catchpoint.startStep('Wait for Login Form');
+await page.waitForSelector('input[placeholder="Enter your user ID"]', { state: 'visible', timeout: 15000 });
+await page.waitForSelector('input[placeholder="Enter your password"]', { state: 'visible', timeout: 15000 });
+
+// Step 4: Get credentials from Catchpoint store
+Catchpoint.startStep('Get Credentials');
+const username = Catchpoint.username('MercuryCatchpoint');
+const password = Catchpoint.password('MercuryCatchpoint');
+
+// Step 5: Enter credentials & measure login duration
+Catchpoint.startStep('Enter Credentials');
+await page.fill('input[placeholder="Enter your user ID"]', username);
+await page.fill('input[placeholder="Enter your password"]', password);
+
+Catchpoint.startStep('Click Login & Wait');
+const startMs = Date.now();
+await page.click('button:has-text("Log In")');
+
+// Wait for a reliable post-login element (Quick Access)
+await page.waitForSelector('div.quick-access:has-text("Quick Access")', { state: 'visible', timeout: 20000 });
+console.log('Login successful, time(ms):', Date.now() - startMs);
