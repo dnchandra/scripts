@@ -1,0 +1,106 @@
+
+// STEP 1: Navigate to base URL and detect redirects / SSO
+Catchpoint.startStep('Navigate to Base URL');
+await page.goto('https://test-pp.lab, { waitUntil: 'domcontentloaded' });
+
+// Give short time for redirect triggers to appear
+await page.waitForTimeout(500);
+
+// Observe redirect chain for ~10 seconds
+const navEnd = Date.now() + 10000;
+let finalUrl = page.url();
+while (Date.now() < navEnd) {
+  const cur = page.url();
+  if (cur !== finalUrl) {
+    console.log('Redirect detected: ', finalUrl, '→', cur);
+    finalUrl = cur;
+  }
+  const loginVisible = await page.locator('input[placeholder="Enter your user ID"]').count() > 0;
+  const ssoDetected = finalUrl.includes('testsso-pp.lab') || finalUrl.includes('fedsso');
+  if (loginVisible || ssoDetected) break;
+  await page.waitForTimeout(300);
+}
+
+console.log('Final URL after navigation:', finalUrl);
+
+// Optional: detect SSO (we’ll still continue to login form logic)
+if (finalUrl.includes('fedsso')) {
+  console.log('Detected SSO flow:', finalUrl);
+}
+
+// STEP 2: Accept cookie popup if shown
+Catchpoint.startStep('Accept Cookies');
+const cookieBtn = page.getByRole('button', { name: 'Accept All Optional Cookies' }).first();
+if (await cookieBtn.count() > 0 && await cookieBtn.isVisible()) {
+  try {
+    await cookieBtn.click({ timeout: 5000 });
+    console.log('Accepted cookie popup');
+  } catch {
+    console.log('Cookie popup click failed (might already be gone)');
+  }
+} else {
+  console.log('No cookie popup visible');
+}
+
+// STEP 3: Wait for login inputs (works for both SSO or normal form)
+Catchpoint.startStep('Wait for Login Form');
+await page.waitForSelector('input[placeholder="Enter your user ID"]', {
+  state: 'visible',
+  timeout: 20000
+});
+await page.waitForSelector('input[placeholder="Enter your password"]', {
+  state: 'visible',
+  timeout: 20000
+});
+console.log('Login form visible. URL:', page.url());
+
+// STEP 4: Retrieve credentials securely from Catchpoint
+Catchpoint.startStep('Get Credentials');
+const username = Catchpoint.username('MercuryCatchpoint');
+const password = Catchpoint.password('MercuryCatchpoint');
+console.log('Fetched credentials from Catchpoint store.');
+
+// STEP 5: Enter credentials
+Catchpoint.startStep('Enter Credentials');
+await page.getByRole('textbox', { name: 'User ID' }).fill(username);
+await page.getByRole('textbox', { name: 'Password' }).fill(password);
+console.log('Credentials entered.');
+
+// STEP 6: Click Login and wait for redirect
+Catchpoint.startStep('Click Login');
+const startLogin = Date.now();
+await page.getByRole('button', { name: /login/i }).click({ timeout: 10000 });
+
+// STEP 7: Wait for successful landing or Quick Access element
+Catchpoint.startStep('Verify Login');
+await page.waitForURL('https://test-pp.lab/**', { timeout: 30000 });
+const successFound = await page.locator('div.quick-access:has-text("Quick Access")').count() > 0;
+if (successFound) {
+  console.log('✅ Login successful.');
+} else {
+  console.warn('⚠️ Quick Access element not found; check final page.');
+}
+console.log('Login time (ms):', Date.now() - startLogin);
+console.log('Post-login URL:', page.url());
+
+// STEP 8: Optional - Navigate to FX TCA Order Monitor
+Catchpoint.startStep('Navigate to FX TCA');
+const fxTca = page.getByRole('menuitem', { name: 'FX TCA Order Monitor' });
+if (await fxTca.count() > 0) {
+  await fxTca.click();
+  console.log('Navigated to FX TCA Order Monitor menu.');
+} else {
+  console.log('FX TCA menu item not visible - skipping.');
+}
+
+// STEP 9: Verify FX blotter page
+Catchpoint.startStep('Verify FX Blotter');
+try {
+  await page.waitForURL('**/fx/blotter', { timeout: 20000 });
+  console.log('✅ FX blotter page loaded.');
+} catch {
+  console.warn('⚠️ FX blotter page did not load within timeout.');
+}
+
+// Done
+console.log('Script completed successfully.');
