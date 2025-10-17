@@ -1,0 +1,107 @@
+// ===============================
+// MARKETS LOGIN - PUPPETEER SCRIPT
+// ===============================
+
+Catchpoint.startStep('Navigate to Base URL');
+await page.goto('https://markets-pp.ml.com', { waitUntil: 'domcontentloaded' });
+
+// Wait briefly for redirects
+await page.waitForTimeout(500);
+
+// Detect redirect changes (SSO or region differences)
+let prevUrl = page.url();
+const detectUntil = Date.now() + 10000;
+while (Date.now() < detectUntil) {
+  const cur = page.url();
+  if (cur !== prevUrl) {
+    console.log('Redirect detected:', prevUrl, '→', cur);
+    prevUrl = cur;
+  }
+  if (cur.includes('fedsso') || await page.$('input[placeholder="Enter your user ID"]')) break;
+  await page.waitForTimeout(300);
+}
+console.log('Final URL after navigation:', page.url());
+
+// STEP 2: Accept cookie popup if it appears
+Catchpoint.startStep('Accept Cookies');
+try {
+  const cookieBtn = await page.$('button#onetrust-accept-btn-handler, button:contains("Accept All Optional Cookies")');
+  if (cookieBtn) {
+    await cookieBtn.click();
+    console.log('Accepted cookie popup');
+  } else {
+    console.log('No cookie popup shown');
+  }
+} catch (err) {
+  console.warn('Cookie acceptance failed or not present:', err.message);
+}
+
+// STEP 3: Wait for login inputs
+Catchpoint.startStep('Wait for Login Form');
+await page.waitForSelector('input[placeholder="Enter your user ID"]', { visible: true, timeout: 20000 });
+await page.waitForSelector('input[placeholder="Enter your password"]', { visible: true, timeout: 20000 });
+console.log('Login form visible.');
+
+// STEP 4: Retrieve credentials
+Catchpoint.startStep('Get Credentials');
+const username = Catchpoint.username('MercuryCatchpoint');
+const password = Catchpoint.password('MercuryCatchpoint');
+
+// STEP 5: Enter credentials
+Catchpoint.startStep('Enter Credentials');
+await page.type('input[placeholder="Enter your user ID"]', username, { delay: 50 });
+await page.type('input[placeholder="Enter your password"]', password, { delay: 50 });
+console.log('Credentials filled.');
+
+// STEP 6: Click Login
+Catchpoint.startStep('Click Login');
+const startTime = Date.now();
+const loginButton =
+  (await page.$('button:has-text("Log In")')) ||
+  (await page.$('button:has-text("Login button")')) ||
+  (await page.$('button[type=submit]'));
+if (loginButton) {
+  await loginButton.click();
+  console.log('Clicked login button.');
+} else {
+  console.warn('Login button not found; pressing Enter instead.');
+  await page.keyboard.press('Enter');
+}
+
+// STEP 7: Wait for success or redirect to main page
+Catchpoint.startStep('Verify Login');
+try {
+  await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 });
+} catch (err) {
+  console.warn('Navigation after login timed out:', err.message);
+}
+console.log('Post-login URL:', page.url());
+
+// Check for success indicator
+const success = await page.$('div.quick-access');
+if (success) {
+  console.log('✅ Login successful. Duration (ms):', Date.now() - startTime);
+} else {
+  console.warn('⚠️ Quick Access element not found. Possible login failure or redirect issue.');
+}
+
+// STEP 8: Navigate to FX TCA Order Monitor (optional)
+Catchpoint.startStep('Navigate to FX TCA');
+const fxMenu = await page.$x("//a[contains(., 'FX TCA Order Monitor')]");
+if (fxMenu.length > 0) {
+  await fxMenu[0].click();
+  console.log('Clicked FX TCA Order Monitor.');
+} else {
+  console.log('FX TCA Order Monitor link not visible.');
+}
+
+// STEP 9: Verify FX blotter page
+Catchpoint.startStep('Verify FX Blotter');
+try {
+  await page.waitForFunction(() => window.location.href.includes('/fx/blotter'), { timeout: 15000 });
+  console.log('✅ FX blotter page loaded successfully.');
+} catch {
+  console.warn('⚠️ FX blotter not reached within timeout.');
+}
+
+console.log('Script completed.');
