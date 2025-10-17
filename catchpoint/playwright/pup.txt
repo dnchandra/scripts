@@ -1,7 +1,3 @@
-// Catchpoint Puppeteer Script for Mercury Portal Login
-// Uses Catchpoint credential store: MercuryCatchpoint
-// Robust dynamic handling of login + cookies + verification + screenshot
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 Catchpoint.startStep('Navigate to Login Page');
