@@ -1,0 +1,965 @@
+
+create_java_instances.sh
+microservice_registration.sh
+microservice_deregistration.sh
+wait_for_deps.sh
+microservice@.service
+microservice-registration.timer
+microservice-registration.service
+microservice-deregistration.timer
+microservice-deregistration.service
+
+
+
+[[muser@test projects]$ cat create_java_instances.sh
+#!/usr/bin/env bash
+# create_java_instances.sh
+# Builds a Java microservice and creates per-instance dirs under /home/muser/projects/instances
+# Each instance's start.sh will register itself with Consul after port bind.
+# Compatible with systemd microservice@.service template.
+set -euo pipefail
+
+BASE_DIR="/projects/instances"
+PROJECT_DIR="/projects/micro-proc"
+SERVICE_PREFIX="Microservice"
+START_PORT=8090
+CONSUL_HTTP_ADDR_DEFAULT="http://127.0.0.1:8500"
+REG_RETRIES=5
+REG_SLEEP=2
+BIND_WAIT_SECS=6
+
+echo "=== Java microservice multi-instance generator ==="
+
+read -r -p "How many instances do you want to create? " NUM
+if ! [[ "$NUM" =~ ^[0-9]+$ ]] || [ "$NUM" -le 0 ]; then
+  echo "Please enter a positive integer."
+  exit 1
+fi
+
+for cmd in mvn java curl; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "ERROR: '$cmd' not found. Install it (e.g. sudo dnf install -y $([ "$cmd" = "mvn" ] && echo "maven" || echo "java-17-openjdk-devel" ))"
+    # don't exit for curl because we'll need it; but if missing, warn and continue
+    if [ "$cmd" != "curl" ]; then exit 1; fi
+  fi
+done
+
+# Prepare project skeleton
+rm -rf "$PROJECT_DIR"
+mkdir -p "$PROJECT_DIR/src/main/java/com/example"
+
+cat > "$PROJECT_DIR/src/main/java/com/example/App.java" <<'JAVA'
+package com.example;
+import com.sun.net.httpserver.*;
+import java.net.*; import java.io.*; import java.time.Instant; import java.util.*;
+public class App {
+  public static void main(String[] args) throws Exception {
+    String name = args.length>0?args[0]:"instance";
+    int port = args.length>1?Integer.parseInt(args[1]):8080;
+    long pid = ProcessHandle.current().pid();
+    String host = InetAddress.getLocalHost().getHostName();
+    HttpServer server = HttpServer.create(new InetSocketAddress(port),0);
+    server.createContext("/",(ex)->{
+      String msg="Hello from "+name+"@"+host+" pid="+pid+" port="+port+"\n";
+      ex.sendResponseHeaders(200,msg.length());
+      try(OutputStream os=ex.getResponseBody()){os.write(msg.getBytes());}
+    });
+    server.createContext("/health",(ex)->{
+      Map<String,Object> m=new HashMap<>();
+      m.put("instance",name); m.put("pid",pid); m.put("port",port);
+      m.put("time",Instant.now().toString()); m.put("status","UP");
+      byte[] resp=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsBytes(m);
+      ex.getResponseHeaders().add("Content-Type","application/json");
+      ex.sendResponseHeaders(200,resp.length);
+      try(OutputStream os=ex.getResponseBody()){os.write(resp);}
+    });
+    System.out.println("["+Instant.now()+"] Started "+name+" on port "+port);
+    server.start();
+    Thread.currentThread().join();
+  }
+}
+JAVA
+
+cat > "$PROJECT_DIR/pom.xml" <<'POM'
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>micro-proc</artifactId>
+  <version>1.0-SNAPSHOT</version>
+  <properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.15.2</version>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.11.0</version>
+        <configuration><source>17</source><target>17</target></configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.4.1</version>
+        <executions><execution><phase>package</phase><goals><goal>shade</goal></goals>
+          <configuration><transformers>
+            <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+              <mainClass>com.example.App</mainClass>
+            </transformer>
+          </transformers></configuration>
+        </execution></executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+POM
+
+# Build and pick jar robustly
+pushd "$PROJECT_DIR" >/dev/null
+echo "Building jar..."
+if ! mvn -Dmaven.test.skip=true clean package -q; then
+  echo "Maven build failed. Run 'mvn clean package' in $PROJECT_DIR to see details."
+  popd >/dev/null
+  exit 1
+fi
+
+# prefer shaded jar, else any jar that is not original
+BUILT_JAR_REL="$(find target -maxdepth 1 -type f -name '*-shaded.jar' -print -quit 2>/dev/null || true)"
+if [[ -z "$BUILT_JAR_REL" ]]; then
+  BUILT_JAR_REL="$(find target -maxdepth 1 -type f -name '*.jar' ! -name '*original*' -print -quit 2>/dev/null || true)"
+fi
+popd >/dev/null
+
+if [[ -z "$BUILT_JAR_REL" ]]; then
+  echo "ERROR: no jar found in $PROJECT_DIR/target. Build output:"
+  ls -la "$PROJECT_DIR/target" || true
+  exit 1
+fi
+
+BUILT_JAR="$(readlink -f "$PROJECT_DIR/$BUILT_JAR_REL")"
+echo "Built jar: $BUILT_JAR"
+
+mkdir -p "$BASE_DIR"
+
+# helper: generate letter suffixes A,B,...,Z,AA...
+suffix_from_index() {
+  local n=$1
+  local s=""
+  while [ $n -gt 0 ]; do
+    local r=$(( (n-1) % 26 ))
+    s="$(printf "\\$(printf '%03o' $((65 + r)))")$s"
+    n=$(( (n-1) / 26 ))
+  done
+  printf "%s" "$s"
+}
+
+# helper: detect local IPv4 for Consul payload (best-effort)
+get_local_ip() {
+  ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' \
+    || hostname -I 2>/dev/null | awk '{print $1}' \
+    || echo "127.0.0.1"
+}
+
+for ((i=1; i<=NUM; i++)); do
+  suffix="$(suffix_from_index "$i")"
+  name="${SERVICE_PREFIX}${suffix}"
+  inst_dir="$BASE_DIR/$name"
+  mkdir -p "$inst_dir"
+
+  cp -p "$BUILT_JAR" "$inst_dir/micro-proc.jar"
+
+  port=$((START_PORT + i - 1))
+  cat > "$inst_dir/instance.env" <<EOF
+PORT=$port
+CONSUL_HTTP_ADDR=${CONSUL_HTTP_ADDR_DEFAULT}
+HEALTH_PATH=/health
+REG_RETRIES=${REG_RETRIES}
+REG_SLEEP=${REG_SLEEP}
+BIND_WAIT_SECS=${BIND_WAIT_SECS}
+EOF
+
+  # start.sh: run java in background, wait for bind, register with Consul, trap to deregister, wait on child
+  cat > "$inst_dir/start.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+[ -f ./instance.env ] && set -o allexport && . ./instance.env && set +o allexport
+
+NAME=$(basename "$PWD")
+JAR="./micro-proc.jar"
+LOG="./service.log"
+PIDFILE="./service.pid"
+PORT="${PORT:-}"
+CONSUL_HTTP_ADDR="${CONSUL_HTTP_ADDR:-http://127.0.0.1:8500}"
+HEALTH_PATH="${HEALTH_PATH:-/health}"
+REG_RETRIES="${REG_RETRIES:-3}"
+REG_SLEEP="${REG_SLEEP:-1}"
+BIND_WAIT_SECS="${BIND_WAIT_SECS:-5}"
+
+if [ -z "$PORT" ]; then
+  echo "[$(date '+%F %T')] ERROR: PORT not set" | tee -a "$LOG" >&2
+  exit 1
+fi
+
+get_local_ip() {
+  ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' \
+    || hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1"
+}
+
+SERVICE_ID="${NAME}-$(hostname -s)-${PORT}"
+SERVICE_ADDR="$(get_local_ip)"
+
+echo "[$(date '+%F %T')] Starting ${NAME} (port=${PORT})" | tee -a "$LOG"
+
+# start java in background
+java -jar "$JAR" "$NAME" "$PORT" >>"$LOG" 2>&1 &
+_child_pid=$!
+echo "$_child_pid" > "$PIDFILE"
+echo "[$(date '+%F %T')] Launched java pid=$_child_pid" | tee -a "$LOG"
+
+# wait for port bind (best-effort)
+wait_for_bind() {
+  local secs=$1
+  if command -v ss >/dev/null 2>&1; then
+    while [ "$secs" -gt 0 ]; do
+      if ss -lnt 2>/dev/null | awk -v p=":${PORT}" '$0 ~ p { exit 0 } END { exit 1 }'; then
+        return 0
+      fi
+      sleep 1; secs=$((secs-1))
+    done
+    return 1
+  fi
+  while [ "$secs" -gt 0 ]; do
+    if (echo > "/dev/tcp/127.0.0.1/${PORT}") >/dev/null 2>&1; then return 0; fi
+    sleep 1; secs=$((secs-1))
+  done
+  return 1
+}
+
+# prepare Consul payload (HTTP health check)
+create_payload() {
+  cat <<EOF
+{
+  "ID": "${SERVICE_ID}",
+  "Name": "${NAME}",
+  "Address": "${SERVICE_ADDR}",
+  "Port": ${PORT},
+  "Tags": ["java","${NAME}"],
+  "Check": {
+    "HTTP": "http://${SERVICE_ADDR}:${PORT}${HEALTH_PATH}",
+    "Interval": "10s",
+    "Timeout": "3s",
+    "DeregisterCriticalServiceAfter": "1m"
+  }
+}
+EOF
+}
+
+if wait_for_bind "$BIND_WAIT_SECS"; then
+  echo "[$(date '+%F %T')] Port ${PORT} bound; attempting Consul registration (${CONSUL_HTTP_ADDR})" | tee -a "$LOG"
+else
+  echo "[$(date '+%F %T')] WARN: port ${PORT} not bound after ${BIND_WAIT_SECS}s; will still attempt registration" | tee -a "$LOG"
+fi
+
+payload_file="$(mktemp)"
+create_payload > "$payload_file"
+
+i=0
+while [ "$i" -lt "$REG_RETRIES" ]; do
+  if curl -fsS --max-time 5 -X PUT "${CONSUL_HTTP_ADDR}/v1/agent/service/register" \
+       -H "Content-Type: application/json" --data @"${payload_file}"; then
+    echo "[$(date '+%F %T')] Consul: registered ${SERVICE_ID}" | tee -a "$LOG"
+    rm -f "$payload_file"
+    break
+  fi
+  i=$((i+1))
+  echo "[$(date '+%F %T')] Consul register attempt ${i} failed; retrying in ${REG_SLEEP}s" | tee -a "$LOG"
+  sleep "$REG_SLEEP"
+done
+[ -f "$payload_file" ] && rm -f "$payload_file" || true
+
+# deregister on exit
+deregister_on_exit() {
+  curl -fsS -X PUT "${CONSUL_HTTP_ADDR}/v1/agent/service/deregister/${SERVICE_ID}" >/dev/null 2>&1 || true
+  [ -f "$PIDFILE" ] && rm -f "$PIDFILE" || true
+  echo "[$(date '+%F %T')] Exiting start.sh for ${NAME}" | tee -a "$LOG"
+}
+trap 'deregister_on_exit' EXIT INT TERM
+
+# wait on child so start.sh stays the parent process (helpful for non-template service files)
+wait "$_child_pid"
+SH
+  chmod 0755 "$inst_dir/start.sh"
+
+  # stop.sh: graceful stop + consul dereg
+  cat > "$inst_dir/stop.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+[ -f ./instance.env ] && set -o allexport && . ./instance.env && set +o allexport
+
+NAME=$(basename "$PWD")
+PIDFILE="./service.pid"
+LOG="./service.log"
+PORT="${PORT:-}"
+CONSUL_HTTP_ADDR="${CONSUL_HTTP_ADDR:-http://127.0.0.1:8500}"
+
+# prefer pidfile
+if [ -f "$PIDFILE" ]; then
+  PID="$(cat "$PIDFILE" 2>/dev/null || true)"
+else
+  PID="$(ps -eo pid=,args= | awk -v j="micro-proc.jar" -v n="$NAME" '$0 ~ j && $0 ~ n {print $1; exit}')"
+fi
+
+if [ -n "${PID:-}" ]; then
+  echo "[$(date '+%F %T')] Stopping ${NAME} pid=${PID}" | tee -a "$LOG"
+  kill "$PID" 2>/dev/null || true
+  sleep 2
+  if kill -0 "$PID" 2>/dev/null; then
+    kill -9 "$PID" 2>/dev/null || true
+  fi
+  [ -f "$PIDFILE" ] && rm -f "$PIDFILE" || true
+fi
+
+if [ -n "${PORT:-}" ]; then
+  SERVICE_ID="${NAME}-$(hostname -s)-${PORT}"
+  curl -fsS -X PUT "${CONSUL_HTTP_ADDR}/v1/agent/service/deregister/${SERVICE_ID}" >/dev/null 2>&1 || true
+  echo "[$(date '+%F %T')] Deregistered ${SERVICE_ID}" | tee -a "$LOG"
+else
+  echo "[$(date '+%F %T')] WARN: PORT unknown; skipped consul deregistration" | tee -a "$LOG"
+fi
+SH
+  chmod 0755 "$inst_dir/stop.sh"
+
+  # write instance.env already done earlier; ensure ownership & perms
+  chown -R "$(id -u):$(id -g)" "$inst_dir" 2>/dev/null || true
+  chmod -R 0755 "$inst_dir"
+
+  echo "Created instance $name (port=$port)"
+done
+
+echo "Instances created under $BASE_DIR"
+ls -la "$BASE_DIR"
+
+
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+[[muser@test projects]$ cat microservice_registration.sh
+#!/usr/bin/env bash
+# /projects/microservice_registration.sh  (template-backed)
+# Enables/starts microservice@<Instance> for each instance directory under /projects/instances
+set -euo pipefail
+
+BASE_DIR="/projects/instances"
+TEMPLATE="microservice@.service"
+LOG_DIR="/projects/logs"
+LOG_FILE="${LOG_DIR}/microservice_registration.log"
+
+mkdir -p "$LOG_DIR"
+chmod 775 "$LOG_DIR" 2>/dev/null || true
+
+log(){ local m; m="$(date '+%F %T') - $*"; echo "$m"; printf '%s\n' "$m" >>"$LOG_FILE"; }
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "ERROR: must run as root" >&2
+  exit 1
+fi
+
+# ensure template present
+if [[ ! -f "/etc/systemd/system/${TEMPLATE}" && ! -f "/usr/lib/systemd/system/${TEMPLATE}" ]]; then
+  log "ERROR: template ${TEMPLATE} not found under /etc or /usr/lib. Place it and run systemctl daemon-reload."
+  exit 2
+fi
+
+log "=== template registration pass start ==="
+
+# For each instance directory that has an executable start.sh, enable the template instance.
+for d in "$BASE_DIR"/*/; do
+  [[ -d "$d" ]] || continue
+  inst="$(basename "$d")"
+
+  if [[ ! -x "$d/start.sh" ]]; then
+    log "skip $inst: start.sh missing or not executable"
+    continue
+  fi
+
+  unit="microservice@${inst}.service"
+  log "Enabling+starting template instance: $unit"
+  if ! systemctl enable --now "$unit"; then
+    log "Warning: failed to enable/start $unit"
+  else
+    log "Enabled+started $unit"
+  fi
+done
+
+log "=== template registration pass complete ==="
+exit 0
+
+
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+[muser@test projects]$ cat microservice_deregistration.sh
+#!/usr/bin/env bash
+# /projects/microservice_deregistration.sh  (template-aware)
+# Disable/stop microservice@<Instance> when the instance directory exists but start.sh is missing/not executable.
+set -euo pipefail
+
+BASE_DIR="/projects/instances"
+TEMPLATE_PREFIX="microservice@"
+TEMPLATE_SUFFIX=".service"
+LOG_DIR="/projects/logs"
+LOG_FILE="${LOG_DIR}/microservice_deregistration.log"
+
+mkdir -p "$LOG_DIR"
+chmod 775 "$LOG_DIR" 2>/dev/null || true
+
+log() { local m; m="$(date '+%F %T') - $*"; echo "$m"; printf '%s\n' "$m" >>"$LOG_FILE"; }
+
+# require root
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "ERROR: must run as root" >&2
+  exit 1
+fi
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "ERROR: systemctl not found" >&2
+  exit 2
+fi
+
+log "=== deregistration pass start (template-aware) ==="
+
+for d in "$BASE_DIR"/*/; do
+  [[ -d "$d" ]] || continue
+  inst="$(basename "$d")"
+  start_sh="$d/start.sh"
+  unit="${TEMPLATE_PREFIX}${inst}${TEMPLATE_SUFFIX}"
+
+  if [[ -x "$start_sh" ]]; then
+    log "Keeping ${inst}: start.sh present and executable"
+    continue
+  fi
+
+  # start.sh missing or not executable -> stop & disable the template instance
+  log "Deregistering ${inst}: start.sh missing or not executable -> stopping & disabling ${unit}"
+
+  # Stop if running (ignore failures)
+  if systemctl is-active --quiet "$unit"; then
+    log "Stopping $unit"
+    systemctl stop "$unit" || log "Warning: stop returned non-zero for $unit"
+  else
+    log "$unit not active"
+  fi
+
+  # Disable so it won't restart on boot
+  if systemctl is-enabled --quiet "$unit"; then
+    log "Disabling $unit"
+    systemctl disable --now "$unit" || log "Warning: disable returned non-zero for $unit"
+  else
+    log "$unit not enabled"
+  fi
+
+  # Reset failed and ensure unit not left in failed state
+  systemctl reset-failed "$unit" || true
+
+  # Optionally, ensure Consul deregistration was called by stop.sh.
+  # If you want to forcibly deregister from Consul here (as a safety net), uncomment:
+  # SERVICE_ID="${inst}-$(hostname -s)-$(grep '^PORT=' "$d/instance.env" 2>/dev/null | cut -d= -f2)"
+  # [ -n "$SERVICE_ID" ] && curl -fsS -X PUT "http://127.0.0.1:8500/v1/agent/service/deregister/${SERVICE_ID}" >/dev/null 2>&1 || true
+
+done
+
+log "Reloading systemd daemon"
+systemctl daemon-reload
+
+log "=== deregistration pass complete ==="
+exit 0
+
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+/etc/systemd/system/microservice-registration.service
+
+
+[Unit]
+Description=Microservice auto-registration service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c '/projects/microservice_registration.sh'
+User=root
+
+
+
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+/etc/systemd/system/microservice-registration.timer
+
+[Unit]
+Description=Periodic microservice registration pass
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=1m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
+
+
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+/etc/systemd/system/microservice-deregistration.service
+
+
+[root@test system]# cat /etc/systemd/system/microservice-deregistration.service
+[Unit]
+Description=Microservice auto-deregistration service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash '/projects/microservice_deregistration.sh'
+User=root
+
+
+
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+/etc/systemd/system/microservice-deregistration.timer
+
+[Unit]
+Description=Periodic microservice deregistration pass
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=1m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+/etc/systemd/system/microservice@.service
+
+
+[Unit]
+Description=Microservice instance %i
+After=network-online.target consul.service
+Wants=network-online.target
+# Ensure consul is present before we start; no failure on consul not found (keeps behavior simple)
+Requires=consul.service
+
+[Service]
+User=muser
+WorkingDirectory=/projects/instances/%i
+# wait for consul leader / HTTP API before launching the jar (10s per try x 12 attempts = 120s)
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 12); do curl -fsS http://127.0.0.1:8500/v1/status/leader && break || sleep 10; done'
+ExecStart=/bin/bash -c 'exec /projects/instances/%i/start.sh'
+ExecStop=/bin/bash -c 'exec /projects/instances/%i/stop.sh || pkill -f "micro-proc.jar.*%i" || true'
+Restart=on-failure
+RestartSec=10
+Type=simple
+StandardOutput=append:/projects/logs/%i.log
+StandardError=append:/projects/logs/%i.err
+
+[Install]
+WantedBy=multi-user.target
+
+
++++++++++++++++++++++++++++++++++++++++++++
+
+Modify /projects/instances/<instance>/start.sh to:
+
+Poll Consul API for leader or health before launching Java (if you want to block).
+
+Optionally, for Service C, poll Consul service health endpoints for A and D until they become passing, before starting C.
+
+Example snippet to insert in start.sh before launching Java:
+
+# wait-for-consul
+for i in $(seq 1 12); do
+  if curl -fsS http://127.0.0.1:8500/v1/status/leader >/dev/null 2>&1; then
+    echo "Consul available"; break
+  fi
+  echo "Waiting for consul... ($i)"
+  sleep 5
+done
+
+# if this is MicroserviceC, wait for A and D health to be passing
+if [[ "$NAME" = "MicroserviceC" ]]; then
+  for svc in "MicroserviceA" "MicroserviceD"; do
+    for i in $(seq 1 24); do
+      # check service health via Consul; require at least one node passing
+      if curl -fsS "http://127.0.0.1:8500/v1/health/service/${svc}?passing" | grep -q '\['; then
+        echo "$svc healthy"
+        break
+      fi
+      echo "Waiting for $svc health... ($i)"
+      sleep 5
+    done
+  done
+fi
+
+++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+[root@test ~]# cat /projects/wait_for_deps.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+# wait_for_deps.sh <instance-id>
+INSTANCE="$1"
+INSTANCE_DIR="/projects/instances/${INSTANCE}"
+
+# read env file if present (systemd already loads EnvironmentFile, but re-read to be safe)
+if [[ -f "${INSTANCE_DIR}/instance.env" ]]; then
+  # shellcheck disable=SC1090
+  set -o allexport; . "${INSTANCE_DIR}/instance.env"; set +o allexport
+fi
+
+CONSUL_HTTP_ADDR="${CONSUL_HTTP_ADDR:-http://127.0.0.1:8500}"
+CONSUL_WAIT="${CONSUL_WAIT:-60}"
+PEER_SERVICES="${PEER_SERVICES:-}"
+PEER_WAIT="${PEER_WAIT:-120}"
+TOTAL_WAIT="${TOTAL_WAIT:-0}"   # total maximum seconds to wait (0 = unlimited)
+FAIL_ON_MISSING_PEERS="${FAIL_ON_MISSING_PEERS:-false}"
+
+timestamp(){ date '+%F %T.%3N'; }
+log(){ echo "$(timestamp) - wait-for-deps[${INSTANCE}] - $*"; }
+
+curl_ok() { curl -fsS --max-time 5 "$@" >/dev/null 2>&1 || return 1; }
+
+# Wait for consul (blocking up to CONSUL_WAIT)
+if [[ "${CONSUL_WAIT}" -gt 0 ]]; then
+  log "Waiting up to ${CONSUL_WAIT}s for Consul API ${CONSUL_HTTP_ADDR}"
+  remain="${CONSUL_WAIT}"
+  while [[ "$remain" -gt 0 ]]; do
+    if curl_ok "${CONSUL_HTTP_ADDR%/}/v1/status/leader"; then
+      log "Consul API reachable"
+      break
+    fi
+    sleep 1
+    remain=$((remain-1))
+  done
+  if [[ "$remain" -le 0 ]]; then
+    log "Consul not reachable after ${CONSUL_WAIT}s"
+    # allow proceeding if not fatal
+  fi
+fi
+
+# Helper to check peer via Consul health (passing)
+peer_healthy() {
+  local svc="$1"
+  local url="${CONSUL_HTTP_ADDR%/}/v1/health/service/${svc}?passing"
+  local out
+  if out="$(curl -fsS --max-time 5 "$url" 2>/dev/null)"; then
+    # non-empty array indicates at least one passing node
+    if echo "$out" | grep -q '{'; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# Blocking wait for each configured peer (honors TOTAL_WAIT)
+if [[ -n "${PEER_SERVICES}" ]]; then
+  log "Configured to wait for peers: ${PEER_SERVICES} (per-peer timeout ${PEER_WAIT}s)"
+  start_ts=$(date +%s)
+  for svc in ${PEER_SERVICES}; do
+    log "Waiting for peer ${svc} to report passing health"
+    remain="${PEER_WAIT}"
+    found=0
+    while [[ "$remain" -gt 0 ]]; do
+      if peer_healthy "$svc"; then
+        found=1
+        log "Peer ${svc} healthy"
+        break
+      fi
+      sleep 2
+      remain=$((remain-2))
+
+      # check overall total timeout if set
+      if [[ "${TOTAL_WAIT:-0}" -gt 0 ]]; then
+        now=$(date +%s)
+        elapsed=$((now - start_ts))
+        if [[ "$elapsed" -ge "${TOTAL_WAIT}" ]]; then
+          log "TOTAL_WAIT (${TOTAL_WAIT}s) exceeded; stopping wait"
+          break 2
+        fi
+      fi
+    done
+
+    if [[ "$found" -ne 1 ]]; then
+      log "Peer ${svc} not healthy after ${PEER_WAIT}s"
+      if [[ "${FAIL_ON_MISSING_PEERS}" = "true" ]]; then
+        log "FAIL_ON_MISSING_PEERS=true -> exiting non-zero"
+        exit 2
+      else
+        log "Continuing despite missing peer ${svc} (set FAIL_ON_MISSING_PEERS=true to fail instead)"
+      fi
+    fi
+  done
+fi
+
+log "Dependency wait checks complete for ${INSTANCE}"
+exit 0
+
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+/projects/instances/MicroserviceC/instance.env
+
+PORT=8092
+CONSUL_HTTP_ADDR=http://127.0.0.1:8500
+# Wait up to 90s for Consul API before starting the app (adjust as needed)
+CONSUL_WAIT=90
+
+# Wait for specific services (space-separated). Name must match what you register in Consul (your NAME from start.sh)
+PEER_SERVICES="MicroserviceD MicroserviceE"
+
+# Wait up to 180s per peer
+PEER_WAIT=180
+
+# If true, the helper exits non-zero when peers are not healthy (so systemd will mark start failed)
+FAIL_ON_MISSING_PEERS=false
+
+
+
+sudo chown -R muser:muser /projects/logs
+sudo chmod 0775 /projects/logs
+sudo semanage fcontext -a -t var_log_t '/projects/logs(/.*)?'
+sudo restorecon -Rv /projects/logs
+
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now microservice-registration.timer microservice-deregistration.timer
+
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+[root@test system]# cat consul.service
+[Unit]
+Description=Consul Agent (project-local)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=muser
+Group=muser
+WorkingDirectory=/home/muser/projects/consul
+ExecStart=/home/muser/projects/consul/start_consul.sh
+ExecStop=/home/muser/projects/consul/stop_consul.sh
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal
+KillMode=control-group
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
+
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+[root@test system]# cat consul-filewatch.path
+[Unit]
+Description=Watch consul project directory for start_consul.sh removal
+
+[Path]
+# watch directory for changes (create/remove/rename)
+PathChanged=/home/muser/projects/consul
+
+# optional: also trigger on boot so state is reconciled at boot
+# PathExists=/home/muser/projects/consul/start_consul.sh
+
+[Install]
+WantedBy=multi-user.target
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+
+[root@test system]# cat consul-filewatch.service
+[Unit]
+Description=Handle consul project directory change
+# ensure we run after basic services started
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/consul_filewatch.sh
+Nice=10
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+[root@test system]# ls -ltZr /usr/local/bin/consul_filewatch.sh
+-rwxr-xr-x. 1 root root unconfined_u:object_r:bin_t:s0 1696 Oct 20 21:36 /usr/local/bin/consul_filewatch.sh
+[root@test system]#
+[root@test system]#
+[root@test system]# cat /usr/local/bin/consul_filewatch.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOGTAG="consul-watch"
+BASE="/home/muser/projects/consul"
+WATCH_FILE="$BASE/start_consul.sh"
+SERVICE="consul.service"
+CONSUL_BIN="$BASE/bin/consul"    # adjust if consul is elsewhere
+LOCK_FD=9
+LOCK_FILE="/var/lock/consul-filewatch.lock"
+
+logger -t $LOGTAG "consul_filewatch invoked; checking $WATCH_FILE"
+
+# Acquire a non-blocking lock to avoid concurrent runs
+exec {LOCK_FD}>"$LOCK_FILE"
+if ! flock -n "$LOCK_FD"; then
+  logger -t $LOGTAG "Another filewatch run in progress — exiting"
+  exit 0
+fi
+
+# helper
+is_active() { systemctl is-active --quiet "$SERVICE"; }
+
+if [[ -f "$WATCH_FILE" ]]; then
+  logger -t $LOGTAG "Start file present -> ensure ${SERVICE} is running"
+  if ! is_active; then
+    logger -t $LOGTAG "Starting ${SERVICE}"
+    if systemctl start "$SERVICE"; then
+      logger -t $LOGTAG "${SERVICE} started"
+    else
+      logger -t $LOGTAG "Failed to start ${SERVICE}; check journalctl -u ${SERVICE}"
+    fi
+  else
+    logger -t $LOGTAG "${SERVICE} already active -> no action"
+  fi
+else
+  logger -t $LOGTAG "Start file missing -> ensure ${SERVICE} is stopped"
+  if is_active; then
+    logger -t $LOGTAG "Stopping ${SERVICE} (graceful leave then stop)"
+    if [[ -x "$CONSUL_BIN" ]]; then
+      "$CONSUL_BIN" leave >/dev/null 2>&1 && logger -t $LOGTAG "consul leave succeeded" || logger -t $LOGTAG "consul leave failed (continuing)"
+    else
+      logger -t $LOGTAG "consul binary not found at $CONSUL_BIN; skipping leave"
+    fi
+    systemctl stop "$SERVICE" && logger -t $LOGTAG "${SERVICE} stopped" || logger -t $LOGTAG "systemctl stop returned non-zero"
+  else
+    logger -t $LOGTAG "${SERVICE} not active -> no action"
+  fi
+fi
+
+exit 0
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++==
+
+for i in A B C D E; do systemctl is-active --quiet microservice@Microservice${i}.service && echo "Microservice${i} running" || echo "Microservice${i} not running"; done
+
+0. To check SELinux blocking/Denied
+sudo ausearch -m avc -ts recent | grep start.sh
+
+1. List current custom rules
+sudo semanage fcontext -l | grep '/projects/instances'
+
+
+2. Deleting context
+
+sudo semanage fcontext -d '/projects/instances(/.*)?/.*\.sh'
+
+3. Add the specific rule for only start/stop scripts
+
+sudo semanage fcontext -a -t bin_t '/projects/instances(/.*)?/(start|stop)\.sh'
+
+4. Apply the new contexts
+
+sudo restorecon -Rv /projects/instances
+
+5. Verify
+
+find /projects/instances -type f -name '*.sh' -exec ls -lZ {} \;
+
+sudo semanage fcontext -l | grep '/projects/instances' #-->Folder Level
+
+
+
+2.Make sure .sh files are executable (UNIX perms)
+
+sudo find /projects/instances -type f -name '*.sh' -exec chmod a+rx {} \;
+
+3. Quick immediate test (temporary) — chcon only on .sh files
+
+sudo find /projects/instances -type f -name '*.sh' -exec chcon -t bin_t {} \;
+
+
+4. Alternative: label only certain scripts explicitly
+
+If you prefer to be even more explicit (e.g., label only start.sh and stop.sh for each instance):
+
+# chcon immediate
+sudo find /projects/instances -type f \( -name start.sh -o -name stop.sh \) -exec chcon -t bin_t {} \;
+
+# persistent semanage rule for any start.sh/stop.sh
+sudo semanage fcontext -a -t bin_t '/projects/instances(/.*)?/(start|stop)\.sh'
+sudo restorecon -Rv /projects/instances
+
+
+5. Make it permanent: add semanage rule for .sh files and apply
+sudo semanage fcontext -a -t bin_t '/projects/instances(/.*)?/.*\.sh'
+
+6. Apply the labels that semanage just recorded
+
+sudo restorecon -Rv /projects/instances
+
+7. After restorecon, confirm the .sh files now have bin_t:
+
+ls -lZ /projects/instances/*/*.sh
+# or:
+find /projects/instances -type f -name '*.sh' -exec ls -lZ {} \;
+
+
+
+
+# make muser own it
+sudo chown muser:muser /projects/wait_for_deps.sh
+sudo chmod 0755 /projects/wait_for_deps.sh
+
+# give it correct SELinux type so systemd can execute it
+sudo semanage fcontext -a -t bin_t '/projects/wait_for_deps\.sh'
+sudo restorecon -v /projects/wait_for_deps.sh
+
+# verify
+ls -Z /projects/wait_for_deps.sh
+# should show muser:muser ... :object_r:bin_t:s0
+
+
+sudo semanage fcontext -a -t bin_t '/projects/wait_for_deps\.sh'
+sudo restorecon -v /projects/wait_for_deps.sh
+ls -Z /projects/wait_for_deps.sh
+
+sudo semanage fcontext -a -t bin_t '/projects(/.*)?'
+sudo restorecon -Rv /projects
+
+sudo semanage fcontext -a -t systemd_exec_t '/projects/wait_for_deps\.sh'
+sudo restorecon -v /projects/wait_for_deps.sh
+
+sudo ausearch -m AVC -ts recent
