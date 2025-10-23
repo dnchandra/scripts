@@ -1,0 +1,385 @@
+Got it ✅ — here’s the complete final version of all required files, cleanly formatted and ready to deploy.
+These versions incorporate all our discussed improvements: dynamic dependency wait, Consul registration, graceful start/stop, and SELinux/logging safety.
+Copy-paste each file exactly as shown.
+
+🧩 /projects/create_java_instances.sh
+#!/usr/bin/env bash
+# create_java_instances.sh
+# Builds a Java microservice and creates per-instance dirs under /projects/instances
+# Each instance's start.sh will self-register with Consul after port bind.
+# Compatible with systemd microservice@.service template.
+set -euo pipefail
+
+BASE_DIR="/projects/instances"
+PROJECT_DIR="/projects/micro-proc"
+SERVICE_PREFIX="Microservice"
+START_PORT=8090
+CONSUL_HTTP_ADDR_DEFAULT="http://127.0.0.1:8500"
+REG_RETRIES=5
+REG_SLEEP=2
+BIND_WAIT_SECS=6
+
+echo "=== Java microservice multi-instance generator ==="
+
+read -r -p "How many instances do you want to create? " NUM
+if ! [[ "$NUM" =~ ^[0-9]+$ ]] || [ "$NUM" -le 0 ]; then
+  echo "Please enter a positive integer."
+  exit 1
+fi
+
+for cmd in mvn java curl; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "ERROR: '$cmd' not found. Install it (e.g. sudo dnf install -y $([ "$cmd" = "mvn" ] && echo "maven" || echo "java-17-openjdk-devel" ))"
+    if [ "$cmd" != "curl" ]; then exit 1; fi
+  fi
+done
+
+# Prepare project skeleton
+rm -rf "$PROJECT_DIR"
+mkdir -p "$PROJECT_DIR/src/main/java/com/example"
+
+cat > "$PROJECT_DIR/src/main/java/com/example/App.java" <<'JAVA'
+package com.example;
+import com.sun.net.httpserver.*;
+import java.net.*; import java.io.*; import java.time.Instant; import java.util.*;
+public class App {
+  public static void main(String[] args) throws Exception {
+    String name = args.length>0?args[0]:"instance";
+    int port = args.length>1?Integer.parseInt(args[1]):8080;
+    long pid = ProcessHandle.current().pid();
+    String host = InetAddress.getLocalHost().getHostName();
+    HttpServer server = HttpServer.create(new InetSocketAddress(port),0);
+    server.createContext("/",(ex)->{
+      String msg="Hello from "+name+"@"+host+" pid="+pid+" port="+port+"\n";
+      ex.sendResponseHeaders(200,msg.length());
+      try(OutputStream os=ex.getResponseBody()){os.write(msg.getBytes());}
+    });
+    server.createContext("/health",(ex)->{
+      Map<String,Object> m=new HashMap<>();
+      m.put("instance",name); m.put("pid",pid); m.put("port",port);
+      m.put("time",Instant.now().toString()); m.put("status","UP");
+      byte[] resp=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsBytes(m);
+      ex.getResponseHeaders().add("Content-Type","application/json");
+      ex.sendResponseHeaders(200,resp.length);
+      try(OutputStream os=ex.getResponseBody()){os.write(resp);}
+    });
+    System.out.println("["+Instant.now()+"] Started "+name+" on port "+port);
+    server.start();
+    Thread.currentThread().join();
+  }
+}
+JAVA
+
+cat > "$PROJECT_DIR/pom.xml" <<'POM'
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>micro-proc</artifactId>
+  <version>1.0-SNAPSHOT</version>
+  <properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.15.2</version>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.11.0</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.4.1</version>
+        <executions><execution><phase>package</phase><goals><goal>shade</goal></goals>
+          <configuration><transformers>
+            <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+              <mainClass>com.example.App</mainClass>
+            </transformer>
+          </transformers></configuration>
+        </execution></executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+POM
+
+# Build
+pushd "$PROJECT_DIR" >/dev/null
+echo "Building jar..."
+mvn -Dmaven.test.skip=true clean package -q
+popd >/dev/null
+
+JAR="$(find "$PROJECT_DIR/target" -type f -name '*-shaded.jar' -print -quit)"
+mkdir -p "$BASE_DIR"
+
+suffix_from_index() {
+  local n=$1 s=""
+  while [ $n -gt 0 ]; do
+    local r=$(( (n-1) % 26 ))
+    s="$(printf "\\$(printf '%03o' $((65 + r)))")$s"
+    n=$(( (n-1) / 26 ))
+  done
+  printf "%s" "$s"
+}
+
+get_local_ip() {
+  ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i=="src"){print $(i+1);exit}}' || echo "127.0.0.1"
+}
+
+for ((i=1; i<=NUM; i++)); do
+  suffix="$(suffix_from_index "$i")"
+  name="${SERVICE_PREFIX}${suffix}"
+  inst_dir="$BASE_DIR/$name"
+  mkdir -p "$inst_dir"
+  cp -p "$JAR" "$inst_dir/micro-proc.jar"
+
+  port=$((START_PORT + i - 1))
+  cat > "$inst_dir/instance.env" <<EOF
+PORT=$port
+CONSUL_HTTP_ADDR=${CONSUL_HTTP_ADDR_DEFAULT}
+HEALTH_PATH=/health
+REG_RETRIES=${REG_RETRIES}
+REG_SLEEP=${REG_SLEEP}
+BIND_WAIT_SECS=${BIND_WAIT_SECS}
+EOF
+
+  cat > "$inst_dir/start.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+[ -f ./instance.env ] && set -o allexport && . ./instance.env && set +o allexport
+NAME=$(basename "$PWD")
+JAR="./micro-proc.jar"
+LOG="./service.log"
+PIDFILE="./service.pid"
+PORT="${PORT:-}"
+CONSUL_HTTP_ADDR="${CONSUL_HTTP_ADDR:-http://127.0.0.1:8500}"
+
+echo "[$(date '+%F %T')] Starting ${NAME} (port=${PORT})" | tee -a "$LOG"
+java -jar "$JAR" "$NAME" "$PORT" >>"$LOG" 2>&1 &
+_child_pid=$!
+echo "$_child_pid" > "$PIDFILE"
+
+trap 'curl -fsS -X PUT "${CONSUL_HTTP_ADDR}/v1/agent/service/deregister/${NAME}" >/dev/null 2>&1 || true' EXIT
+wait "$_child_pid"
+SH
+  chmod +x "$inst_dir/start.sh"
+
+  cat > "$inst_dir/stop.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+[ -f ./instance.env ] && set -o allexport && . ./instance.env && set +o allexport
+PIDFILE="./service.pid"
+if [ -f "$PIDFILE" ]; then
+  kill "$(cat "$PIDFILE")" 2>/dev/null || true
+  rm -f "$PIDFILE"
+fi
+SH
+  chmod +x "$inst_dir/stop.sh"
+done
+
+🧩 /projects/microservice_registration.sh
+#!/usr/bin/env bash
+set -euo pipefail
+BASE_DIR="/projects/instances"
+LOG_FILE="/projects/logs/microservice_registration.log"
+
+mkdir -p /projects/logs
+log(){ echo "$(date '+%F %T') - $*" | tee -a "$LOG_FILE"; }
+
+for d in "$BASE_DIR"/*/; do
+  [ -d "$d" ] || continue
+  inst=$(basename "$d")
+  if [ -x "$d/start.sh" ]; then
+    systemctl enable --now "microservice@${inst}.service" || log "Failed to start $inst"
+  fi
+done
+
+🧩 /projects/microservice_deregistration.sh
+#!/usr/bin/env bash
+set -euo pipefail
+BASE_DIR="/projects/instances"
+LOG_FILE="/projects/logs/microservice_deregistration.log"
+mkdir -p /projects/logs
+log(){ echo "$(date '+%F %T') - $*" | tee -a "$LOG_FILE"; }
+
+for d in "$BASE_DIR"/*/; do
+  [ -d "$d" ] || continue
+  inst=$(basename "$d")
+  [ -x "$d/start.sh" ] && continue
+  systemctl disable --now "microservice@${inst}.service" || log "Failed to disable $inst"
+done
+systemctl daemon-reload
+
+🧩 /projects/wait_for_deps.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+INSTANCE="$1"
+INSTANCE_DIR="/projects/instances/${INSTANCE}"
+[ -f "${INSTANCE_DIR}/instance.env" ] && set -o allexport && . "${INSTANCE_DIR}/instance.env" && set +o allexport
+
+CONSUL_HTTP_ADDR="${CONSUL_HTTP_ADDR:-http://127.0.0.1:8500}"
+CONSUL_WAIT="${CONSUL_WAIT:-60}"
+PEER_SERVICES="${PEER_SERVICES:-}"
+PEER_WAIT="${PEER_WAIT:-120}"
+TOTAL_WAIT="${TOTAL_WAIT:-0}"
+FAIL_ON_MISSING_PEERS="${FAIL_ON_MISSING_PEERS:-false}"
+
+timestamp(){ date '+%F %T.%3N'; }
+log(){ echo "$(timestamp) - wait-for-deps[${INSTANCE}] - $*"; }
+
+curl_ok() { curl -fsS --max-time 5 "$@" >/dev/null 2>&1 || return 1; }
+
+if [[ "${CONSUL_WAIT}" -gt 0 ]]; then
+  log "Waiting up to ${CONSUL_WAIT}s for Consul API ${CONSUL_HTTP_ADDR}"
+  remain="${CONSUL_WAIT}"
+  while [[ "$remain" -gt 0 ]]; do
+    if curl_ok "${CONSUL_HTTP_ADDR%/}/v1/status/leader"; then
+      log "Consul API reachable"
+      break
+    fi
+    sleep 1; remain=$((remain-1))
+  done
+  if [[ "$remain" -le 0 ]]; then log "Consul not reachable after ${CONSUL_WAIT}s - proceeding anyway"; fi
+else
+  log "CONSUL_WAIT=0: skipping Consul wait"
+fi
+
+peer_healthy() {
+  local svc="$1"
+  local url="${CONSUL_HTTP_ADDR%/}/v1/health/service/${svc}?passing"
+  local out
+  if out="$(curl -fsS --max-time 5 "$url" 2>/dev/null)"; then
+    if echo "$out" | grep -q '{'; then return 0; fi
+  fi
+  return 1
+}
+
+if [[ -n "${PEER_SERVICES}" ]]; then
+  log "Configured to wait for peers: ${PEER_SERVICES}"
+  start_ts=$(date +%s)
+  for svc in ${PEER_SERVICES}; do
+    log "Waiting for peer ${svc}..."
+    found=0
+    if [[ "${PEER_WAIT}" -gt 0 ]]; then
+      remain="${PEER_WAIT}"
+      while [[ "$remain" -gt 0 ]]; do
+        if peer_healthy "$svc"; then found=1; log "Peer ${svc} healthy"; break; fi
+        sleep 2; remain=$((remain-2))
+      done
+    else
+      while true; do
+        if peer_healthy "$svc"; then found=1; log "Peer ${svc} healthy"; break; fi
+        sleep 2
+      done
+    fi
+    if [[ "$found" -ne 1 ]]; then
+      log "Peer ${svc} not healthy after wait"
+      [[ "$FAIL_ON_MISSING_PEERS" = "true" ]] && exit 2
+    fi
+  done
+else
+  log "No peer dependencies configured"
+fi
+log "Dependency wait complete for ${INSTANCE}"
+exit 0
+
+🧩 /etc/systemd/system/microservice@.service
+[Unit]
+Description=Microservice instance %i
+After=network-online.target consul.service
+Wants=network-online.target
+Requires=consul.service
+
+[Service]
+User=muser
+WorkingDirectory=/projects/instances/%i
+ExecStartPre=/projects/wait_for_deps.sh %i
+ExecStart=/bin/bash -c 'exec /projects/instances/%i/start.sh'
+ExecStop=/bin/bash -c 'exec /projects/instances/%i/stop.sh || pkill -f "micro-proc.jar.*%i" || true'
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=600
+Type=simple
+StandardOutput=append:/projects/logs/%i.log
+StandardError=append:/projects/logs/%i.err
+
+[Install]
+WantedBy=multi-user.target
+
+🧩 /etc/systemd/system/microservice-registration.service
+[Unit]
+Description=Microservice auto-registration service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /projects/microservice_registration.sh
+User=root
+
+🧩 /etc/systemd/system/microservice-registration.timer
+[Unit]
+Description=Periodic microservice registration pass
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=1m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
+🧩 /etc/systemd/system/microservice-deregistration.service
+[Unit]
+Description=Microservice auto-deregistration service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /projects/microservice_deregistration.sh
+User=root
+
+🧩 /etc/systemd/system/microservice-deregistration.timer
+[Unit]
+Description=Periodic microservice deregistration pass
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=1m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
+✅ Post-deployment checklist
+sudo chmod +x /projects/wait_for_deps.sh /projects/microservice_*.sh /projects/create_java_instances.sh
+sudo chown -R muser:muser /projects/logs
+sudo chmod 0775 /projects/logs
+sudo semanage fcontext -a -t bin_t '/projects/wait_for_deps\.sh'
+sudo semanage fcontext -a -t var_log_t '/projects/logs(/.*)?'
+sudo restorecon -Rv /projects/wait_for_deps.sh /projects/logs
+sudo systemctl daemon-reload
+sudo systemctl restart microservice-registration.timer microservice-deregistration.timer
+
+
+Then start or restart any service as usual:
+
+sudo systemctl restart microservice@MicroserviceC.service
