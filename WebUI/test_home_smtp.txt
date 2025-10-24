@@ -1,0 +1,325 @@
+// play_linux_har_all.js
+// Playwright login probe that always writes HAR and screenshot (matching names)
+// Now also emails the screenshot every run and the HAR on failure using s-nail.
+//
+// Usage:
+//EMAIL_TO=support@example.lab EMAIL_MTA=smtp://smtp.example.lab:55 EMAIL_FROM=alert@example.lab MERCURY_USER=myuser MERCURY_PASS=mypass node play_linux_har_all.js
+//node play_linux_har_all.js \
+  --user myuser \
+  --pass mypass \
+  --to support@example.lab \
+  --mta smtp://smtp.example.lab:55 \
+  --from alert@example.lab \
+  --outdir /projects/logs \
+  --headed
+//   MERCURY_USER=... MERCURY_PASS=... OUTDIR=... EMAIL_TO="support@example.lab" EMAIL_MTA="smtp://smtp.example.lab:55" node play_linux_har_all.js
+//   Add --headed if you want headed
+
+const { chromium } = require('playwright');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { spawnSync } = require('child_process');
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const headed = process.argv.includes('--headed');
+
+const launchOptions = {
+  headless: !headed,
+  args: ['--no-sandbox', '--disable-setuid-sandbox']
+};
+if (headed) launchOptions.args.unshift('--start-maximized');
+
+const OUTROOT = process.env.OUTDIR || '.';
+const PAGE_NAME = 'Home';
+const PAGE_DIR = path.join(OUTROOT, 'logs', PAGE_NAME.toLowerCase());
+fs.mkdirSync(PAGE_DIR, { recursive: true });
+
+function tsName(status, ext = 'png') {
+  const d = new Date();
+  const Y = d.getFullYear(), M = String(d.getMonth() + 1).padStart(2, '0');
+  const D = String(d.getDate()).padStart(2, '0');
+  const T = Date.now();
+  return `${PAGE_NAME}_${status}_${Y}_${M}_${D}_${T}.${ext}`;
+}
+
+/**
+ * Send an email using s-nail (synchronous).
+ * - EMAIL_MTA: smtp://... (ex: smtp://smtp.example.lab:55)
+ * - EMAIL_FROM: from address (ex: alert@example.lab)
+ * - EMAIL_TO: comma separated recipients (ex: support@example.lab)
+ * - EMAIL_SUBJECT_PREFIX: optional prefix
+ * - SEND_EMAIL=false to skip sending
+ *
+ * attachments: array of absolute file paths
+ */
+function sendEmail(subject, body, attachments = []) {
+  try {
+    if (process.env.SEND_EMAIL && process.env.SEND_EMAIL.toLowerCase() === 'false') {
+      console.log('sendEmail: disabled via SEND_EMAIL=false');
+      return;
+    }
+    const mta = process.env.EMAIL_MTA || 'smtp://smtp.example.lab:55';
+    const from = process.env.EMAIL_FROM || 'alert@example.lab';
+    const toEnv = process.env.EMAIL_TO || 'support@example.lab';
+    const to = toEnv.split(',').map(s => s.trim()).filter(Boolean);
+    if (!to.length) {
+      console.warn('sendEmail: no recipients configured (EMAIL_TO empty). Skipping email.');
+      return;
+    }
+    const subjectPrefix = process.env.EMAIL_SUBJECT_PREFIX ? `${process.env.EMAIL_SUBJECT_PREFIX} ` : '';
+    const finalSubject = `${subjectPrefix}${subject}`;
+
+    // build args for s-nail
+    // Use -S key=value (no surrounding quotes) and -a for attachments (if supported)
+    // s-nail variants accept '-a file' to attach; many systems have that.
+    const args = [
+      '-v',
+      '-S', `mta=${mta}`,
+      '-S', `from=${from}`,
+      '-S', 'smtp-auth=non',
+      '-s', finalSubject
+    ];
+
+    // add attachments (each with -a)
+    for (const a of attachments) {
+      if (fs.existsSync(a)) {
+        args.push('-a', a);
+      } else {
+        console.warn(`sendEmail: attachment missing, skipping: ${a}`);
+      }
+    }
+
+    // add recipients at end
+    args.push(...to);
+
+    console.log('sendEmail: running s-nail', args.join(' '));
+    // Run s-nail and pass the body via stdin
+    const res = spawnSync('s-nail', args, {
+      input: body,
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024 // 10MB
+    });
+
+    if (res.error) {
+      console.error('sendEmail: spawn error', res.error);
+    } else {
+      console.log('sendEmail: exitCode=', res.status);
+      if (res.stdout) console.log('s-nail stdout:', res.stdout.trim().slice(0, 400));
+      if (res.stderr) console.log('s-nail stderr:', res.stderr.trim().slice(0, 400));
+      if (res.status !== 0) {
+        console.error('sendEmail: non-zero exit from s-nail', res.status);
+      }
+    }
+  } catch (e) {
+    console.error('sendEmail exception:', e && (e.stack || e.message || e));
+  }
+}
+
+(async () => {
+  const username = process.env.MERCURY_USER || 'username';
+  const password = process.env.MERCURY_PASS || 'pass1word';
+
+  // temporary HAR path (Playwright writes HAR on context close)
+  const tmpHar = path.join(os.tmpdir(), `play_har_${Date.now()}.har`);
+
+  const browser = await chromium.launch(launchOptions);
+
+  // create context that records HAR to a temporary file
+  const context = await browser.newContext({
+    viewport: headed ? null : { width: 1280, height: 800 },
+    recordHar: { path: tmpHar }
+  });
+
+  const page = await context.newPage();
+
+  let finalScreenshotPath = null;
+  let finalHarPath = null;
+  let status = 'Failed';
+
+  try {
+    // Navigate
+    await page.goto('https://markets-pp.ml.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await sleep(2500);
+
+    // Accept cookie/privacy if present (quick checks)
+    const cookieSelectors = [
+      '#onetrust-accept-btn-handler',
+      'text="Accept All Optional Cookies"',
+      'text="Allow All"',
+      'button:has-text("Accept All Optional Cookies")',
+      'button:has-text("Allow All")'
+    ];
+    for (const sel of cookieSelectors) {
+      try {
+        const loc = page.locator(sel);
+        if (await loc.count() > 0 && await loc.first().isVisible()) {
+          await loc.first().click({ force: true }).catch(() => loc.first().evaluate(e => e && e.click()));
+          await sleep(1000);
+          break;
+        }
+      } catch {}
+    }
+
+    // Wait for input fields
+    const uSel = 'input[placeholder*="user" i], input[placeholder*="User" i], input[name="username"], input[id*="user"], input[type="text"]';
+    const pSel = 'input[placeholder*="password" i], input[placeholder*="Password" i], input[name="password"], input[id*="pass"], input[type="password"]';
+
+    await page.waitForSelector(uSel, { timeout: 15000 });
+    await page.waitForSelector(pSel, { timeout: 15000 });
+
+    // Fill credentials with robust actions (triple click then type)
+    const userLoc = page.locator(uSel).first();
+    const passLoc = page.locator(pSel).first();
+
+    await userLoc.click({ clickCount: 3 }).catch(() => {});
+    await userLoc.fill(''); // clear defensively
+    await userLoc.type(username, { delay: 40 });
+
+    await passLoc.click({ clickCount: 3 }).catch(() => {});
+    await passLoc.fill('');
+    await passLoc.type(password, { delay: 40 });
+
+    // Click login button (role-based preferred)
+    const loginBtn = page.getByRole('button', { name: /log\s*in|sign\s*in/i }).first();
+    if (await loginBtn.count() > 0 && await loginBtn.first().isVisible()) {
+      await loginBtn.first().click({ timeout: 5000 }).catch(() => page.keyboard.press('Enter'));
+    } else {
+      // fallback selectors
+      const fallback = page.locator('button[type="submit"], input[type="submit"], button[id*="login"], button[class*="login"]').first();
+      if (await fallback.count() > 0 && await fallback.isVisible()) {
+        await fallback.click({ timeout: 5000 }).catch(() => page.keyboard.press('Enter'));
+      } else {
+        await page.keyboard.press('Enter');
+      }
+    }
+
+    // Wait a short fixed period to avoid SSO race (3-5s recommended)
+    await sleep(3500);
+
+    // Success detection: check URL + presence of known home selectors (poll ~10s)
+    let success = false;
+    const successSelectors = [
+      'text="Quick Access"',
+      'text="Featured Research"',
+      'nav:has-text("Reports")'
+    ];
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline && !success) {
+      const cur = page.url();
+      if (cur.startsWith('https://markets-pp.ml.com/') && !cur.includes('login_page') && !cur.includes('resume')) {
+        for (const sel of successSelectors) {
+          try {
+            const loc = page.locator(sel);
+            if (await loc.count() > 0 && await loc.first().isVisible()) {
+              success = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+      if (!success) await sleep(500);
+    }
+
+    status = success ? 'Success' : 'Failed';
+    const shotName = tsName(status, 'png');
+    finalScreenshotPath = path.join(PAGE_DIR, shotName);
+    // take screenshot while context still open (before context.close so HAR includes everything)
+    await page.screenshot({ path: finalScreenshotPath, fullPage: true });
+
+    // close context to flush HAR to tmpHar
+    await context.close().catch(() => {});
+    await browser.close().catch(() => {});
+
+    // rename tmpHar to final har path (matching screenshot name)
+    const harName = shotName.replace(/\.png$/, '.har');
+    finalHarPath = path.join(PAGE_DIR, harName);
+
+    if (fs.existsSync(tmpHar)) {
+      try {
+        fs.renameSync(tmpHar, finalHarPath);
+      } catch (e) {
+        // if rename fails, attempt copy then unlink
+        try {
+          fs.copyFileSync(tmpHar, finalHarPath);
+          fs.unlinkSync(tmpHar);
+        } catch (e2) {
+          // ignore — HAR couldn't be moved, but screenshot is present
+        }
+      }
+    } else {
+      // tmp HAR missing; create an empty har (best-effort) so consumers always find a file
+      try {
+        fs.writeFileSync(finalHarPath, JSON.stringify({ log: { entries: [] } }, null, 2));
+      } catch (e) {}
+    }
+
+    console.log(`${status === 'Success' ? '✅' : '❌'} ${status} — screenshot: ${finalScreenshotPath} har: ${finalHarPath}`);
+
+    // send email: always attach screenshot. If failed, also attach HAR.
+    try {
+      const subject = `Probe ${status}: ${PAGE_NAME}`;
+      const body = [
+        `Probe status: ${status}`,
+        `Page: ${PAGE_NAME}`,
+        `Screenshot: ${finalScreenshotPath}`,
+        `HAR: ${finalHarPath}`,
+        `Timestamp: ${new Date().toISOString()}`
+      ].join('\n');
+      const attachments = [finalScreenshotPath];
+      if (status !== 'Success' && finalHarPath && fs.existsSync(finalHarPath)) {
+        attachments.push(finalHarPath);
+      }
+      sendEmail(subject, body, attachments);
+    } catch (e) {
+      console.error('Email send attempt failed:', e && (e.message || e));
+    }
+
+    if (!success) process.exitCode = 2;
+  } catch (err) {
+    // On any error, ensure context/browser closed and HAR+screenshot saved if possible
+    try { await context.close().catch(() => {}); } catch {}
+    try { await browser.close().catch(() => {}); } catch {}
+
+    // screenshot and har naming for error
+    const shotName = tsName('Failed', 'png');
+    finalScreenshotPath = path.join(PAGE_DIR, shotName);
+    await page.screenshot({ path: finalScreenshotPath, fullPage: true }).catch(() => {});
+
+    finalHarPath = finalScreenshotPath.replace(/\.png$/, '.har');
+    if (fs.existsSync(tmpHar)) {
+      try {
+        fs.renameSync(tmpHar, finalHarPath);
+      } catch {
+        try { fs.copyFileSync(tmpHar, finalHarPath); fs.unlinkSync(tmpHar); } catch {}
+      }
+    } else {
+      try { fs.writeFileSync(finalHarPath, JSON.stringify({ log: { entries: [] } }, null, 2)); } catch {}
+    }
+
+    console.error('Script error:', err && err.message);
+    console.error(`Saved failure screenshot: ${finalScreenshotPath}, har: ${finalHarPath}`);
+
+    // attempt to send email with screenshot + har
+    try {
+      const subject = `Probe Error: ${PAGE_NAME}`;
+      const body = [
+        `Probe experienced an exception.`,
+        `Error: ${err && (err.stack || err.message)}`,
+        `Screenshot: ${finalScreenshotPath}`,
+        `HAR: ${finalHarPath}`,
+        `Timestamp: ${new Date().toISOString()}`
+      ].join('\n');
+      const attachments = [finalScreenshotPath];
+      if (finalHarPath && fs.existsSync(finalHarPath)) attachments.push(finalHarPath);
+      sendEmail(subject, body, attachments);
+    } catch (e) {
+      console.error('Email send attempt failed in catch:', e && (e.message || e));
+    }
+
+    process.exitCode = 2;
+  } finally {
+    // Cleanup: remove tmpHar if still present (we've either renamed or copied it)
+    try { if (fs.existsSync(tmpHar)) fs.unlinkSync(tmpHar); } catch (e) {}
+  }
+})();
