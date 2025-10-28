@@ -1,0 +1,139 @@
+<h1 style="color:#0747a6;">📘 ${appName} – Application Overview</h1>
+
+<p><strong>Application ID:</strong> ${appID}</p>
+<p><strong>Primary Owner:</strong> ${ownerName} | <strong>Support Team:</strong> ${supportTeam}</p>
+<p><strong>Environment:</strong> PROD / UAT / DEV</p>
+
+<hr/>
+
+<h2>🧭 Overview</h2>
+<p>${appName} is part of the Markets Sales & Research Technology (MSRT) ecosystem. 
+It supports ${shortPurpose}.</p>
+
+<ul>
+  <li><strong>Technology Stack:</strong> ${stackDetails}</li>
+  <li><strong>Hosted On:</strong> ${infraType}</li>
+  <li><strong>Database:</strong> ${dbType}</li>
+  <li><strong>Monitoring:</strong> Splunk / Dynatrace / AppDynamics</li>
+</ul>
+
+<hr/>
+
+<h2>🏗️ Architecture Summary</h2>
+<p>The application follows a ${architectureType} model. Below is a high-level overview:</p>
+<p><img src="/download/attachments/${diagramID}/architecture-diagram.png" width="850" /></p>
+
+<p><a href="Architecture">View detailed Architecture →</a></p>
+
+<hr/>
+
+<h2>📦 Inventory & Environment</h2>
+
+<table style="width:100%; border-collapse:collapse;">
+  <thead>
+    <tr style="background:#e9ecef;">
+      <th style="padding:8px;">Component</th>
+      <th style="padding:8px;">Server / URL</th>
+      <th style="padding:8px;">Owner</th>
+      <th style="padding:8px;">Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Web Tier</td>
+      <td>web01.prod.example.com</td>
+      <td>Infra Ops</td>
+      <td>Load-balanced behind F5</td>
+    </tr>
+    <tr>
+      <td>DB</td>
+      <td>db01.prod.example.com</td>
+      <td>DBA</td>
+      <td>Postgres 14</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><a href="Inventory-Support">More Inventory Details →</a></p>
+
+<hr/>
+
+<h2>🔁 Upstream / Downstream Dependencies</h2>
+<table style="width:100%; border-collapse:collapse;">
+  <thead>
+    <tr style="background:#e9ecef;">
+      <th style="padding:8px;">System</th>
+      <th style="padding:8px;">Type</th>
+      <th style="padding:8px;">Contact</th>
+      <th style="padding:8px;">Interface</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>ERP Feed</td>
+      <td>Upstream</td>
+      <td>Ravi Kumar</td>
+      <td>REST API</td>
+    </tr>
+    <tr>
+      <td>Analytics</td>
+      <td>Downstream</td>
+      <td>Priya Singh</td>
+      <td>Kafka</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><a href="Information-flows">Detailed Interface Info →</a></p>
+
+<hr/>
+
+<h2>⚙️ Operations & SOPs</h2>
+
+<ul>
+  <li><a href="How-to-StartStop-MariaDB">How to Start/Stop Services</a></li>
+  <li><a href="Restart-Services">Restart Procedures</a></li>
+  <li><a href="Health-Checks">Health Check SOP</a></li>
+</ul>
+
+<p><a href="Documentation">Go to Complete SOP Docs →</a></p>
+
+<hr/>
+
+<h2>📞 Support & Contacts</h2>
+
+<table style="width:100%; border-collapse:collapse;">
+  <thead>
+    <tr style="background:#e9ecef;">
+      <th style="padding:8px;">Role</th>
+      <th style="padding:8px;">Name</th>
+      <th style="padding:8px;">Email</th>
+      <th style="padding:8px;">Phone</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Primary On-call</td>
+      <td>John Doe</td>
+      <td><a href="mailto:john.doe@bank.com">john.doe@bank.com</a></td>
+      <td>+91-987654321</td>
+    </tr>
+    <tr>
+      <td>Backup</td>
+      <td>Mary Smith</td>
+      <td><a href="mailto:mary.smith@bank.com">mary.smith@bank.com</a></td>
+      <td>+1-555-222</td>
+    </tr>
+  </tbody>
+</table>
+
+<hr/>
+
+<h2>🧠 Quick References</h2>
+<ul>
+  <li><a href="FactSheet">Fact Sheet</a></li>
+  <li><a href="MAPS-Support">MAPS Support Details</a></li>
+  <li><a href="Horizon-Wiki">Horizon Wiki</a></li>
+</ul>
+
+<p style="font-size:12px; color:#6b778c;">Last updated: <strong>October 2025</strong> | Owner: <strong>${ownerName}</strong></p>
