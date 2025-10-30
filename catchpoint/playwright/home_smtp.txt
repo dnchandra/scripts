@@ -1,0 +1,511 @@
+// play_linux_har_all_fxblotter_final.js
+// FX Blotter validation with HAR + Screenshot + JSON summary + s-nail emailing (unauth SMTP)
+// Usage examples:
+// MERCURY_USER=... MERCURY_PASS=... EMAIL_MTA="smtp://smtp.example.lab:25" EMAIL_FROM=support@example.lab EMAIL_TO=support@example.lab node play_linux_har_all_fxblotter_final.js
+// node play_linux_har_all_fxblotter_final.js --headed
+
+const { chromium } = require('playwright');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { spawnSync } = require('child_process');
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const headed = process.argv.includes('--headed');
+
+const chromiumArgs = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-gpu'
+];
+if (headed) chromiumArgs.unshift('--start-maximized');
+
+const launchOptions = {
+  headless: !headed,
+  args: chromiumArgs
+};
+
+const OUTROOT = process.env.OUTDIR || '.';
+const PAGE_NAME = 'FX_Blotter';
+const PAGE_DIR = path.join(OUTROOT, 'logs', PAGE_NAME.toLowerCase());
+fs.mkdirSync(PAGE_DIR, { recursive: true });
+
+function tsName(status, ext = 'png') {
+  const d = new Date();
+  const Y = d.getFullYear(), M = String(d.getMonth() + 1).padStart(2, '0');
+  const D = String(d.getDate()).padStart(2, '0');
+  const T = Date.now();
+  return `${PAGE_NAME}_${status}_${Y}_${M}_${D}_${T}.${ext}`;
+}
+
+/**
+ * sendEmail: uses s-nail (no SMTP credentials by default).
+ * - EMAIL_MTA (e.g. smtp://smtp3dns.exmample.lab:25)
+ * - EMAIL_FROM
+ * - EMAIL_TO (comma separated)
+ * - EMAIL_SUBJECT_PREFIX optional
+ *
+ * Attachments must be real files; function will resolve to absolute paths and skip missing files.
+ * If s-nail is missing or fails, a dead.letter file will be appended in $HOME.
+ */
+function sendEmail(subject, body, attachments = []) {
+  try {
+    if (process.env.SEND_EMAIL && process.env.SEND_EMAIL.toLowerCase() === 'false') {
+      console.log('sendEmail: disabled via SEND_EMAIL=false');
+      return;
+    }
+
+    // Resolve & verify attachments
+    const absAttachments = [];
+    for (const a of (attachments || [])) {
+      if (!a) continue;
+      const abs = path.resolve(a);
+      if (fs.existsSync(abs)) absAttachments.push(abs);
+      else console.warn('sendEmail: attachment missing, skipping:', abs);
+    }
+
+    // Check s-nail presence
+    const which = spawnSync('which', ['s-nail'], { encoding: 'utf8' });
+    if (which.status !== 0) {
+      console.warn('sendEmail: s-nail not found, saving to dead.letter');
+      const dead = path.join(os.homedir(), 'dead.letter');
+      const content = `Subject: ${subject}\n\n${body}\n\nAttachments:\n${absAttachments.join('\n')}\n\n`;
+      fs.appendFileSync(dead, content + '\n--\n');
+      console.warn('sendEmail: message saved to', dead);
+      return;
+    }
+
+    const mta = process.env.EMAIL_MTA || 'smtp://smtp.example.lab:25';
+    const from = process.env.EMAIL_FROM || 'support@example.lab';
+    const toEnv = process.env.EMAIL_TO || 'support@example.lab';
+    const to = toEnv.split(',').map(s => s.trim()).filter(Boolean);
+    if (!to.length) {
+      console.warn('sendEmail: no recipients configured (EMAIL_TO empty). Skipping email.');
+      return;
+    }
+
+    const prefix = process.env.EMAIL_SUBJECT_PREFIX ? `${process.env.EMAIL_SUBJECT_PREFIX} ` : '';
+    const finalSubject = `${prefix}${subject}`;
+
+    // Build s-nail args in the form that worked for you: smtp-auth=none, no STARTTLS
+    const args = [
+      '-v',
+      '-S', `mta=${mta}`,
+      '-S', 'smtp-auth=none',
+      '-S', `from=${from}`,
+      '-S', 'sendcharsets=utf-8',
+      '-S', 'mime-types=/etc/mime.types',
+      '-s', finalSubject
+    ];
+
+    // Attachments MUST appear before recipients
+    for (const f of absAttachments) args.push('-a', f);
+
+    // Append recipients
+    args.push(...to);
+
+    console.log('sendEmail: running s-nail', args.join(' '));
+    const res = spawnSync('s-nail', args, {
+      input: body,
+      encoding: 'utf8',
+      maxBuffer: 30 * 1024 * 1024
+    });
+
+    if (res.error) {
+      console.error('sendEmail: spawn error', res.error);
+      const dead = path.join(os.homedir(), 'dead.letter');
+      fs.appendFileSync(dead, `Subject: ${subject}\n\n${body}\n\nAttachments:\n${absAttachments.join('\n')}\n\nspawn error: ${res.error}\n`);
+      return;
+    }
+
+    console.log('sendEmail: s-nail exitCode=', res.status);
+    if (res.stdout) console.log('s-nail stdout:', res.stdout.trim().slice(0, 2000));
+    if (res.stderr) console.log('s-nail stderr:', res.stderr.trim().slice(0, 4000));
+
+    if (res.status !== 0) {
+      console.error('sendEmail: non-zero exit from s-nail', res.status);
+      const dead = path.join(os.homedir(), 'dead.letter');
+      fs.appendFileSync(dead, `Subject: ${subject}\n\n${body}\n\nAttachments:\n${absAttachments.join('\n')}\n\ns-nail exit ${res.status}\nstderr:\n${res.stderr || ''}\n`);
+    }
+  } catch (e) {
+    console.error('sendEmail exception:', e && (e.stack || e.message));
+  }
+}
+
+(async () => {
+  const username = process.env.MERCURY_USER || 'username';
+  const password = process.env.MERCURY_PASS || 'pass1word';
+
+  const targetUrl = 'https://example.lab/fx/blotter';
+  const tmpHar = path.join(os.tmpdir(), `play_har_${Date.now()}.har`);
+
+  const browser = await chromium.launch(launchOptions);
+
+  const context = await browser.newContext({
+    viewport: headed ? null : { width: 1280, height: 800 },
+    recordHar: { path: tmpHar }
+  });
+
+  const page = await context.newPage();
+
+  let finalScreenshotPath = null;
+  let finalHarPath = null;
+  let finalJsonPath = null;
+  let chartResults = [];
+  let rowsFound = 0;
+  let reason = null;
+  let success = false;
+
+  try {
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await sleep(2500);
+
+    // cookie handling
+    const cookieSelectors = [
+      '#onetrust-accept-btn-handler',
+      'text="Accept All Optional Cookies"',
+      'text="Allow All"',
+      'button:has-text("Accept All Optional Cookies")',
+      'button:has-text("Allow All")'
+    ];
+    for (const sel of cookieSelectors) {
+      try {
+        const loc = page.locator(sel);
+        if (await loc.count() > 0 && await loc.first().isVisible()) {
+          await loc.first().click({ force: true }).catch(() => loc.first().evaluate(e => e && e.click()));
+          await sleep(1000);
+          break;
+        }
+      } catch {}
+    }
+
+    // login if present
+    const uSel = 'input[placeholder*="user" i], input[name="username"], input[id*="user"], input[type="text"]';
+    const pSel = 'input[placeholder*="password" i], input[name="password"], input[id*="pass"], input[type="password"]';
+    const hasLogin = await page.locator(`${uSel}, ${pSel}`).count() > 0;
+    if (hasLogin) {
+      try {
+        await page.waitForSelector(uSel, { timeout: 15000 });
+        await page.waitForSelector(pSel, { timeout: 15000 });
+
+        const userLoc = page.locator(uSel).first();
+        const passLoc = page.locator(pSel).first();
+
+        await userLoc.click({ clickCount: 3 }).catch(() => {});
+        await userLoc.fill('');
+        await userLoc.type(username, { delay: 40 });
+
+        await passLoc.click({ clickCount: 3 }).catch(() => {});
+        await passLoc.fill('');
+        await passLoc.type(password, { delay: 40 });
+
+        const loginBtn = page.getByRole('button', { name: /log\s*in|sign\s*in/i }).first();
+        if (await loginBtn.count() > 0 && await loginBtn.first().isVisible()) {
+          await loginBtn.first().click({ timeout: 5000 }).catch(() => page.keyboard.press('Enter'));
+        } else {
+          const fallback = page.locator('button[type="submit"], input[type="submit"], button[id*="login"], button[class*="login"]').first();
+          if (await fallback.count() > 0 && await fallback.isVisible()) {
+            await fallback.click({ timeout: 5000 }).catch(() => page.keyboard.press('Enter'));
+          } else {
+            await page.keyboard.press('Enter');
+          }
+        }
+      } catch (e) {
+        console.warn('login flow error:', e && e.message);
+      }
+    }
+
+    await sleep(3500);
+
+    // blotter detection
+    const BLOTTER_TIMEOUT_MS = Number(process.env.BLOTTER_TIMEOUT_MS || 15000);
+    const MIN_ROWS = Number(process.env.MIN_ROWS || 15);
+    const deadline = Date.now() + BLOTTER_TIMEOUT_MS;
+
+    const dataRowSelectors = ['.ui-grid-row', 'table tbody tr', '.grid-row', '.blotter-row', '.fx-row'];
+    const watermarkText = 'No data available';
+    const spinnerSelectors = ['.fa-spinner', '.spinner', '.loading', '.loader', '.busy', 'div[role="status"]'];
+
+    try {
+      const wmLoc = page.locator(`text="${watermarkText}"`);
+      if (await wmLoc.count() > 0 && await wmLoc.first().isVisible()) {
+        reason = `"${watermarkText}" text visible on page`;
+      }
+    } catch (e) {}
+
+    while (Date.now() < deadline && !success && reason === null) {
+      let visibleRowCount = 0;
+      for (const sel of dataRowSelectors) {
+        try {
+          const loc = page.locator(sel);
+          const c = await loc.count();
+          if (c === 0) continue;
+          for (let i = 0; i < c; i++) {
+            const row = loc.nth(i);
+            if (!await row.isVisible()) continue;
+            const txt = (await row.innerText()).trim();
+            if (!txt || txt.toLowerCase().includes(watermarkText.toLowerCase())) continue;
+            if (/\d/.test(txt) || /USD|EUR|GBP|JPY/i.test(txt)) {
+              visibleRowCount++;
+            }
+          }
+        } catch (e) {}
+      }
+
+      rowsFound = visibleRowCount;
+      if (visibleRowCount >= MIN_ROWS) {
+        success = true;
+        reason = `Found ${rowsFound} valid blotter rows (≥ ${MIN_ROWS})`;
+        break;
+      }
+      await sleep(500);
+    }
+
+    if (!success && reason === null) {
+      let spinnerVisible = false;
+      try {
+        for (const s of spinnerSelectors) {
+          const loc = page.locator(s);
+          if (await loc.count() > 0 && await loc.first().isVisible()) {
+            spinnerVisible = true;
+            break;
+          }
+        }
+      } catch (e) {}
+      reason = spinnerVisible ? 'Timeout: spinner visible' : `Timeout: only ${rowsFound} row(s) found (< ${MIN_ROWS})`;
+    }
+
+    // screenshot of blotter
+    const status = success ? 'Success' : 'Failed';
+    const shotName = tsName(status, 'png');
+    finalScreenshotPath = path.join(PAGE_DIR, shotName);
+    await page.screenshot({ path: finalScreenshotPath, fullPage: true });
+
+    // If success, try to capture first two charts (keeps same logic)
+    chartResults = [];
+    if (success) {
+      try {
+        const orderIdLoc = page.locator('text=/\\d{5,}/');
+        const foundIds = [];
+        const maxCandidates = 50;
+        const totalCandidates = Math.min(await orderIdLoc.count(), maxCandidates);
+        for (let i = 0; i < totalCandidates && foundIds.length < 10; i++) {
+          try {
+            const el = orderIdLoc.nth(i);
+            if (!await el.isVisible()) continue;
+            const text = (await el.innerText()).trim();
+            const m = text.match(/\d{5,}/);
+            if (m) {
+              const id = m[0];
+              if (!foundIds.includes(id)) foundIds.push(id);
+            }
+          } catch (e) {}
+        }
+
+        if (foundIds.length === 0) {
+          const altSelectors = ['.order-id', '.orderId', 'td.order, td[data-order-id]', 'a[href*="order"]', 'a[data-order-id]'];
+          for (const sel of altSelectors) {
+            try {
+              const loc = page.locator(sel);
+              const c = Math.min(await loc.count(), 50);
+              for (let i = 0; i < c && foundIds.length < 10; i++) {
+                try {
+                  const el = loc.nth(i);
+                  if (!await el.isVisible()) continue;
+                  const txt = (await el.innerText()).trim();
+                  const m = txt.match(/\d{5,}/);
+                  if (m) {
+                    const id = m[0];
+                    if (!foundIds.includes(id)) foundIds.push(id);
+                  }
+                } catch {}
+              }
+              if (foundIds.length) break;
+            } catch {}
+          }
+        }
+
+        const toCapture = foundIds.slice(0, 2);
+        for (const orderId of toCapture) {
+          let chartShot = null;
+          let chartHarCopy = null;
+          let note = null;
+          try {
+            const clickable = page.locator(`text="${orderId}"`);
+            if (await clickable.count() > 0 && await clickable.first().isVisible()) {
+              await clickable.first().click({ timeout: 5000 }).catch(() => clickable.first().evaluate(e => e && e.click()));
+            } else {
+              const rowCandidate = page.locator(`:text("${orderId}")`).locator('xpath=ancestor::tr').first();
+              if (await rowCandidate.count() > 0 && await rowCandidate.isVisible()) {
+                await rowCandidate.click().catch(() => {});
+              } else {
+                const linkByHref = page.locator(`a[href*="${orderId}"]`).first();
+                if (await linkByHref.count() > 0 && await linkByHref.isVisible()) {
+                  await linkByHref.click().catch(() => {});
+                } else {
+                  await page.locator(`text="${orderId}"`).first().dblclick().catch(() => {});
+                }
+              }
+            }
+
+            const chartSelectors = [
+              '.cumulative-fills',
+              '.order-chart', '.chart', '#orderChart', '.chart-container', '.trade-chart', '.chart-svg'
+            ];
+            let chartFound = false;
+            const chartDeadline = Date.now() + 15000;
+            let chartLocator = null;
+            while (Date.now() < chartDeadline && !chartFound) {
+              for (const cs of chartSelectors) {
+                try {
+                  const cl = page.locator(cs).first();
+                  if (await cl.count() > 0 && await cl.isVisible()) {
+                    chartFound = true;
+                    chartLocator = cl;
+                    break;
+                  }
+                } catch {}
+              }
+              if (!chartFound) await sleep(500);
+            }
+
+            if (chartFound && chartLocator) {
+              const shotFile = tsName(`Chart_${orderId}`, 'png');
+              chartShot = path.join(PAGE_DIR, shotFile);
+              try {
+                await chartLocator.screenshot({ path: chartShot });
+              } catch (e) {
+                await page.screenshot({ path: chartShot, fullPage: false });
+              }
+              note = 'Chart element captured';
+            } else {
+              const shotFile = tsName(`Chart_${orderId}_fullpage`, 'png');
+              chartShot = path.join(PAGE_DIR, shotFile);
+              await page.screenshot({ path: chartShot, fullPage: true });
+              note = 'Chart not found by selectors; full-page screenshot saved';
+            }
+
+            const harFile = tsName(`Chart_${orderId}`, 'har');
+            chartHarCopy = path.join(PAGE_DIR, harFile);
+            try {
+              if (fs.existsSync(tmpHar)) {
+                fs.copyFileSync(tmpHar, chartHarCopy);
+              } else {
+                fs.writeFileSync(chartHarCopy, JSON.stringify({ log: { entries: [] } }, null, 2));
+              }
+            } catch (e) {
+              chartHarCopy = null;
+            }
+
+          } catch (errChart) {
+            note = `Error capturing chart for ${orderId}: ${errChart && errChart.message}`;
+          } finally {
+            chartResults.push({ orderId, chartScreenshot: chartShot, chartHar: chartHarCopy, note });
+            try { await page.keyboard.press('Escape'); await sleep(500); } catch {}
+          }
+        }
+      } catch (e) {
+        console.warn('chart capture flow error:', e && e.message);
+      }
+    }
+
+    // finalize: close context so HAR is flushed
+    await context.close().catch(() => {});
+    await browser.close().catch(() => {});
+
+    // move tmpHar into final HAR
+    const harName = shotName.replace(/\.png$/, '.har');
+    finalHarPath = path.join(PAGE_DIR, harName);
+    if (fs.existsSync(tmpHar)) {
+      try { fs.renameSync(tmpHar, finalHarPath); } catch { try { fs.copyFileSync(tmpHar, finalHarPath); fs.unlinkSync(tmpHar); } catch {} }
+    } else {
+      fs.writeFileSync(finalHarPath, JSON.stringify({ log: { entries: [] } }, null, 2));
+    }
+
+    const summary = {
+      status,
+      url: targetUrl,
+      rows: rowsFound,
+      timestamp: new Date().toISOString(),
+      reason,
+      blotterScreenshot: finalScreenshotPath,
+      blotterHar: finalHarPath,
+      chartCaptures: chartResults
+    };
+    const jsonName = shotName.replace(/\.png$/, '.json');
+    finalJsonPath = path.join(PAGE_DIR, jsonName);
+    fs.writeFileSync(finalJsonPath, JSON.stringify(summary, null, 2));
+
+    console.log(`${status === 'Success' ? '✅' : '❌'} ${status} — screenshot: ${finalScreenshotPath} har: ${finalHarPath} json: ${finalJsonPath}`);
+
+    // Prepare attachments: always include blotter screenshot, include har on failure as policy requires
+    const attachments = [];
+    if (finalScreenshotPath && fs.existsSync(finalScreenshotPath)) attachments.push(finalScreenshotPath);
+    // your policy: always send HAR on failure; otherwise optional
+    if ((!success) && finalHarPath && fs.existsSync(finalHarPath)) attachments.push(finalHarPath);
+    if ((!success) && finalJsonPath && fs.existsSync(finalJsonPath)) attachments.push(finalJsonPath);
+
+    // also include chart artifacts on failure
+    if (!success) {
+      for (const cr of chartResults) {
+        if (cr.chartScreenshot && fs.existsSync(cr.chartScreenshot)) attachments.push(cr.chartScreenshot);
+        if (cr.chartHar && fs.existsSync(cr.chartHar)) attachments.push(cr.chartHar);
+      }
+    }
+
+    // send email (body via stdin)
+    try {
+      const subject = `Probe ${status}: ${PAGE_NAME}`;
+      const bodyLines = [
+        `Probe status: ${status}`,
+        `Page: ${PAGE_NAME}`,
+        `URL: ${targetUrl}`,
+        `Rows found: ${rowsFound}`,
+        `Reason: ${reason}`,
+        `Screenshot: ${finalScreenshotPath}`,
+        `HAR: ${finalHarPath}`,
+        `JSON summary: ${finalJsonPath}`,
+        `Timestamp: ${new Date().toISOString()}`
+      ];
+      const body = bodyLines.join('\n');
+      sendEmail(subject, body, attachments);
+    } catch (e) {
+      console.error('sendEmail attempt failed:', e && (e.message || e));
+    }
+
+    if (!success) process.exitCode = 2;
+  } catch (err) {
+    console.error('Script error:', err && (err.stack || err.message));
+    // try best-effort artifact save
+    try { await context.close().catch(() => {}); } catch {}
+    try { await browser.close().catch(() => {}); } catch {}
+
+    const shotName = tsName('Failed', 'png');
+    finalScreenshotPath = path.join(PAGE_DIR, shotName);
+    try { await page.screenshot({ path: finalScreenshotPath, fullPage: true }); } catch {}
+    finalHarPath = finalScreenshotPath.replace(/\.png$/, '.har');
+    if (fs.existsSync(tmpHar)) {
+      try { fs.renameSync(tmpHar, finalHarPath); } catch { try { fs.copyFileSync(tmpHar, finalHarPath); } catch {} }
+    }
+    finalJsonPath = finalScreenshotPath.replace(/\.png$/, '.json');
+    try { fs.writeFileSync(finalJsonPath, JSON.stringify({ status: 'Failed', error: err && (err.stack || err.message) }, null, 2)); } catch {}
+
+    // send failure email with artifacts
+    try {
+      const attachments = [];
+      if (finalScreenshotPath && fs.existsSync(finalScreenshotPath)) attachments.push(finalScreenshotPath);
+      if (finalHarPath && fs.existsSync(finalHarPath)) attachments.push(finalHarPath);
+      if (finalJsonPath && fs.existsSync(finalJsonPath)) attachments.push(finalJsonPath);
+      const subject = `Probe Error: ${PAGE_NAME}`;
+      const body = [`Probe experienced an exception.`, `Error: ${err && (err.stack || err.message)}`, `Timestamp: ${new Date().toISOString()}`].join('\n');
+      sendEmail(subject, body, attachments);
+    } catch (e) {
+      console.error('sendEmail in catch failed:', e && e.message);
+    }
+
+    process.exitCode = 2;
+  } finally {
+    try { if (fs.existsSync(tmpHar)) fs.unlinkSync(tmpHar); } catch {}
+  }
+})();
