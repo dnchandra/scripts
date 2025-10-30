@@ -1,0 +1,150 @@
+ChatGPT said:
+
+Perfect 👍 — we can quickly isolate and test DNS + navigation from the Chromium headless engine directly (no login, no email, no screenshots).
+
+Here are a few simple, focused Playwright test snippets you can run to pinpoint where resolution fails.
+
+✅ Test 1: Basic navigation (headless)
+
+Check if Chromium itself can resolve and connect.
+
+cat > test_nav.js <<'EOF'
+const { chromium } = require('playwright');
+
+(async () => {
+  const url = 'https://markets-pp.ml.com/';
+  console.log('Trying to navigate to:', url);
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  });
+
+  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  const page = await context.newPage();
+
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    console.log('✅ Navigation success! Final URL:', page.url());
+  } catch (err) {
+    console.error('❌ Navigation failed:', err.message);
+  } finally {
+    await browser.close();
+  }
+})();
+EOF
+
+node test_nav.js
+
+
+Expected output
+
+✅ Navigation success! Final URL: https://markets-pp.ml.com/
+
+
+If you still get ERR_NAME_NOT_RESOLVED, the Chromium resolver (not Node’s) can’t reach your internal DNS.
+
+✅ Test 2: Pre-resolve and use IP fallback
+
+Try using the resolved IP directly (with Host header) to confirm network path.
+
+cat > test_nav_ip.js <<'EOF'
+const { chromium } = require('playwright');
+const dns = require('dns').promises;
+
+(async () => {
+  const host = 'markets-pp.ml.com';
+  const path = '/';
+  const { address } = await dns.lookup(host);
+  console.log('Resolved IP:', address);
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  });
+
+  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  const page = await context.newPage();
+
+  try {
+    const url = `https://${address}${path}`;
+    console.log('Trying direct IP:', url);
+    await page.goto(url, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+      headers: { Host: host }
+    });
+    console.log('✅ Success via IP, final URL:', page.url());
+  } catch (err) {
+    console.error('❌ IP navigation failed:', err.message);
+  } finally {
+    await browser.close();
+  }
+})();
+EOF
+
+node test_nav_ip.js
+
+
+If this works but Test 1 fails, your environment has Chromium DNS isolation (e.g. proxy, internal DNS only available via OS resolver).
+
+✅ Test 3: Show DNS from Node and Chromium
+
+Compare what Node vs Chromium see.
+
+cat > test_dns_compare.js <<'EOF'
+const { chromium } = require('playwright');
+const dns = require('dns').promises;
+
+(async () => {
+  const host = 'markets-pp.ml.com';
+  console.log('Node.js DNS test...');
+  try {
+    const { address } = await dns.lookup(host);
+    console.log('Node resolved:', address);
+  } catch (e) {
+    console.log('Node DNS failed:', e.message);
+  }
+
+  console.log('\nChromium DNS test...');
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--log-level=1']
+  });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    const result = await page.evaluate(async (host) => {
+      return await fetch('https://' + host, { mode: 'no-cors' }).then(() => 'OK').catch(e => e.message);
+    }, host);
+    console.log('Chromium fetch result:', result);
+  } catch (e) {
+    console.error('Chromium fetch exception:', e.message);
+  } finally {
+    await browser.close();
+  }
+})();
+EOF
+
+node test_dns_compare.js
+
+
+If Node resolves but Chromium fails, that confirms it’s not a DNS problem at the OS level but inside Chromium’s resolver.
+
+💡 If Chromium still fails
+
+You can temporarily make it use system DNS via /etc/hosts or a flag:
+
+sudo sh -c 'echo "171.159.226.243 markets-pp.ml.com" >> /etc/hosts'
+
+
+Then re-run Test 1 — it should succeed immediately.
+
+Or launch Chromium with:
+
+args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-features=AsyncDNS']
+
+
+That forces Chromium to use the OS resolver (getaddrinfo) instead of its built-in async DNS client.
+
+Would you like me to integrate that --disable-features=AsyncDNS flag automatically into your full Playwright probe so it always uses your system resolver?
