@@ -1,0 +1,81 @@
+A — Recommended: resolve in Node, pass --host-resolver-rules to Chromium
+
+This uses Node’s DNS once, then instructs Chromium to treat the hostname as that IP for the session only.
+
+// test_host_resolver.js
+const { chromium } = require('playwright');
+const dns = require('dns').promises;
+
+(async () => {
+  const host = 'markets-pp.ml.com';
+  const path = '/';
+  try {
+    const { address } = await dns.lookup(host);
+    console.log('Node resolved:', address);
+
+    const args = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      `--host-resolver-rules=MAP ${host} ${address}`
+    ];
+
+    const browser = await chromium.launch({ headless: true, args });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+
+    const url = `https://${host}${path}`;
+    console.log('Navigating to', url, 'with host-resolver-rules...');
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    console.log('✅ Navigation success, final URL:', page.url());
+
+    await browser.close();
+  } catch (e) {
+    console.error('Failed:', e && (e.message || e));
+  }
+})();
+
+
+Run:
+
+node test_host_resolver.js
+
+
+Why this is good:
+
+No host file changes.
+
+Works per-process; multiple concurrent runs can use different mappings.
+
+Keeps TLS name checks intact (Chromium still sees real hostname).
+
+B — Alternative: disable Chromium AsyncDNS (use OS resolver)
+
+If your Chromium build misbehaves with async DNS, forcing the OS resolver can help.
+
+// test_disable_asyncdns.js
+const { chromium } = require('playwright');
+
+(async () => {
+  const args = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-features=AsyncDNS'
+  ];
+  const browser = await chromium.launch({ headless: true, args });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+
+  try {
+    await page.goto('https://markets-pp.ml.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    console.log('✅ Navigation success:', page.url());
+  } catch (e) {
+    console.error('❌ Navigation failed:', e.message);
+  } finally {
+    await browser.close();
+  }
+})();
+
+
+Run:
+
+node test_disable_asyncdns.js
