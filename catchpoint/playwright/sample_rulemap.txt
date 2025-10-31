@@ -1,0 +1,45 @@
+
+// playwright_hostmap.js
+const { chromium } = require('playwright');
+
+(async () => {
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--host-resolver-rules=MAP example.com 93.184.216.34'
+    ]
+  });
+
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
+  });
+
+  const page = await context.newPage();
+  await page.goto('https://example.com', { waitUntil: 'domcontentloaded' });
+  console.log('Page title:', await page.title());
+  await browser.close();
+})();
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+# playwright_hostmap.py
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(
+        headless=True,
+        args=[
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--host-resolver-rules=MAP example.com 93.184.216.34"
+        ]
+    )
+    context = browser.new_context(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+    )
+    page = context.new_page()
+    page.goto("https://example.com")
+    print("Page title:", page.title())
+    browser.close()
